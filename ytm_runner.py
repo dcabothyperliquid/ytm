@@ -21,7 +21,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-REPO = os.environ.get("GITHUB_REPOSITORY", "dcabothyperliquid/xbot-ytmirror")
+REPO = os.environ.get("GITHUB_REPOSITORY", "dcabothyperliquid/ytm")
 BRANCH = "ytm-data"
 CFG_PATH, ST_PATH = "ytm_config.json", "ytm_state.json"
 MAX_RUN_MIN = int(os.environ.get("MAX_RUN_MIN", "350"))
