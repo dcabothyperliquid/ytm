@@ -354,14 +354,14 @@ def ffmpeg_cmd(hls, rtmp):
         boxes = "1030:10:240:60;1090:10:180:190"   # only the top-right source logo (rest of the frame stays untouched = best quality)
     pos = os.environ.get("YTM_LOGO_POS", "W-w-20:20")
     lw = os.environ.get("YTM_LOGO_W", "170")
-    chain = "[0:v]fps=30,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1"
+    chain = "[0:v]fps=30,scale=1280:720:flags=lanczos:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1"
     if boxes.lower() != "off":
         for bx in boxes.split(";"):
             if bx.count(":") == 3:
                 chain += ",delogo=x=%s:y=%s:w=%s:h=%s" % tuple(bx.split(":"))
     fc = chain + "[bg];[1:v]scale=%s:-1[lg];[bg][lg]overlay=%s,split=2[v][s];[s]fps=1/20,scale=640:-1[snap]" % (lw, pos)
     return (base + ["-i", logo, "-filter_complex", fc, "-map", "[v]", "-map", "0:a?",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-maxrate", "4500k", "-bufsize", "9000k",
+            "-c:v", "libx264", "-preset", "fast", "-profile:v", "high", "-crf", "18", "-maxrate", "6000k", "-bufsize", "12000k",
             "-g", "60", "-pix_fmt", "yuv420p", "-c:a", "copy", "-f", "flv", rtmp,
             "-map", "[snap]", "-q:v", "5", "-f", "image2", "-update", "1", "-y", "/tmp/ytm_frame.jpg"])
 
