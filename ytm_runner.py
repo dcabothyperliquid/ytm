@@ -146,7 +146,7 @@ class Detector:
             res[k] = items[0]["id"]
         return res[k]
 
-    def recent_ids(self, cid, limit=6):
+    def recent_ids(self, cid, limit=15):
         try:
             root = ET.fromstring(http(_RSS + cid))
             ids = [e.text for e in root.iter("{http://www.youtube.com/xml/schemas/2015}videoId") if e.text]
