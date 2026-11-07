@@ -12,6 +12,7 @@ Env: GITHUB_TOKEN, GITHUB_REPOSITORY (set by Actions), YOUTUBE_API_KEY, YT_STREA
 import base64
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -182,6 +183,69 @@ class Detector:
         return out, errs
 
 
+
+# ── auto caption (title/description of OUR live; needs YT_CLIENT_ID/SECRET/REFRESH_TOKEN) ──
+def caption_from(src):
+    """Source title -> (title, description) in the same style, e.g.
+    'Quarter Final-A vs B || Bakhra Cup Azamgarh' -> 'Quarter Final - A vs B || Bakhra Cup Azamgarh Live'."""
+    parts = [p.strip() for p in (src or "").split("||") if p.strip()]
+    main, tour = (parts[0] if parts else ""), (parts[1] if len(parts) > 1 else "")
+    fix = lambda t: " ".join(w.title() if (w.isupper() and len(w) > 3 and w.isalpha()) else w for w in t.split())
+    main, tour = fix(main), fix(tour)
+    stage, teams = "", main
+    m = re.match(r"^([^-]{2,40}?)\s*-\s*(.+)$", main)
+    if m:
+        stage, teams = m.group(1).strip(), m.group(2).strip()
+    title = ("%s - %s" % (stage, teams) if stage else teams)
+    if tour:
+        cands = [title + " || " + tour + " Live", title + " || " + tour]
+    else:
+        cands = [title if "live" in title.lower() else title + " | Live Cricket", title]
+    title = next((c for c in cands if len(c) <= 100), cands[-1])
+    desc = [(tour + " - " + stage) if (tour and stage) else (tour or stage or "Live Cricket"), teams,
+            "Live cricket match coverage.", ""]
+    tag = "".join(re.sub(r"[^0-9A-Za-z]", "", w).capitalize() for w in tour.split()[:2])
+    desc.append(("#%s " % tag if tag else "") + "#LiveCricket")
+    if len(title) > 100:
+        title = title[:100].rsplit(" ", 1)[0]
+    return title.strip(), "\n".join(desc)
+
+
+def _oauth_token():
+    cid, sec, rt = (os.environ.get(k, "").strip() for k in ("YT_CLIENT_ID", "YT_CLIENT_SECRET", "YT_REFRESH_TOKEN"))
+    if not (cid and sec and rt):
+        return None
+    data = urllib.parse.urlencode({"client_id": cid, "client_secret": sec, "refresh_token": rt,
+                                   "grant_type": "refresh_token"}).encode()
+    with urllib.request.urlopen(urllib.request.Request("https://oauth2.googleapis.com/token", data=data), timeout=20) as r:
+        return json.loads(r.read())["access_token"]
+
+
+def set_caption(src_title):
+    """Returns 'done', 'wait' (our broadcast not active yet) or 'skip' (no OAuth secrets)."""
+    tok = _oauth_token()
+    if not tok:
+        return "skip"
+    H = {"Authorization": "Bearer " + tok, "Content-Type": "application/json"}
+
+    def call(method, path, params, body=None):
+        url = _API + path + "?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None,
+                                     headers=H, method=method)
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read() or b"{}")
+
+    items = call("GET", "liveBroadcasts", {"part": "snippet,status", "broadcastStatus": "active", "maxResults": 5}).get("items", [])
+    if not items:
+        return "wait"
+    it = items[0]
+    title, desc = caption_from(src_title)
+    sn = {"title": title, "description": desc, "scheduledStartTime": it["snippet"]["scheduledStartTime"]}
+    call("PUT", "liveBroadcasts", {"part": "snippet"}, {"id": it["id"], "snippet": sn})
+    log("caption set: " + title)
+    return "done"
+
+
 # ── relay ────────────────────────────────────────────────────────────────
 def probe(url):
     cmd = ["yt-dlp", "--no-warnings", "--no-playlist", "--js-runtimes", "node", "--remote-components", "ejs:github"] + (["--cookies", COOKIES_FILE] if os.path.exists(COOKIES_FILE) else []) + ["-J", url]
@@ -267,6 +331,21 @@ class Relay:
             self._finish("ended", "source ended")
         else:
             self._finish("failed", "ffmpeg/probe failed")
+
+    def caption_tick(self, now, _set=None):
+        """Retry every ~25s (max 12x) until our broadcast is active, then set title/description once."""
+        r = self.st.get("relay")
+        if not r or r.get("caption_done") or now - r.get("caption_try", 0) < 25:
+            return
+        r["caption_try"] = now
+        r["caption_n"] = r.get("caption_n", 0) + 1
+        try:
+            res = (_set or set_caption)(r.get("title", ""))
+        except Exception as e:
+            log("caption error: %s" % str(e)[:120])
+            res = "wait"
+        if res in ("done", "skip") or r["caption_n"] >= 12:
+            r["caption_done"] = True
 
     def stop(self, outcome="stopped", note="manual"):
         if self.st.get("relay"):
@@ -360,6 +439,8 @@ def run(_sleep=time.sleep, _read=None, _write=None, _relay_factory=None, _detect
     while time.time() < deadline and not _stop["flag"]:
         now = time.time()
         relay.poll()
+        if hasattr(relay, "caption_tick"):
+            relay.caption_tick(now)
         if now - last_cfg >= CFG_EVERY:                       # config/commands: cheap, every ~15s
             cfg = _read(CFG_PATH)[0] or {}
             last_cfg = now
