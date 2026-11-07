@@ -100,6 +100,8 @@ def minutes_today(state, now=None):
     now = now or time.time()
     s0, tot = day_start(now), 0.0
     for h in state.get("history", []):
+        if not h.get("started"):          # failed probe: never streamed, must not count toward the daily cap
+            continue
         a, b = max(h.get("started") or 0, s0), h.get("ended") or 0
         if b > a:
             tot += (b - a) / 60.0
