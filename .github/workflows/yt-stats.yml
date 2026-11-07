@@ -1,0 +1,37 @@
+name: YT Stats Snapshot
+
+# Writes stats.json (channel subs/views/watch hours + bot history summary) to branch `ytm-stats`.
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "17 */3 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: yt-stats
+  cancel-in-progress: true
+
+jobs:
+  stats:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fetch bot state
+        run: git fetch -q origin ytm-data && git show origin/ytm-data:ytm_state.json > /tmp/ytm_state.json || echo '{}' > /tmp/ytm_state.json
+      - name: Snapshot
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+        run: python stats_snapshot.py
+      - name: Publish to ytm-stats branch
+        run: |
+          git config user.name "ytm-stats"; git config user.email "stats@users.noreply.github.com"
+          mkdir -p /tmp/o && cp stats.json /tmp/o/
+          git checkout --orphan ytm-stats && git rm -rf . -q && cp /tmp/o/stats.json . && git add stats.json
+          git commit -qm "stats" && git push -f origin ytm-stats
