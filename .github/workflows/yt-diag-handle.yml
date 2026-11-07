@@ -1,0 +1,27 @@
+name: YT Diag Handle (manual)
+on:
+  workflow_dispatch:
+    inputs:
+      handle:
+        description: "YouTube handle"
+        default: "@24LIVEVENT"
+permissions:
+  contents: write
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run diag
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: python diag_handle.py "${{ github.event.inputs.handle }}"
+      - name: Publish result to ytm-diag branch
+        run: |
+          git config user.name "ytm-diag"; git config user.email "diag@users.noreply.github.com"
+          mkdir -p /tmp/o && cp diag_out.json /tmp/o/
+          git checkout --orphan ytm-diag && git rm -rf . -q && cp /tmp/o/diag_out.json . && git add diag_out.json
+          git commit -qm "diag result" && git push -f origin ytm-diag
