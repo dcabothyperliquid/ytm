@@ -184,7 +184,7 @@ class Detector:
 
 # ── relay ────────────────────────────────────────────────────────────────
 def probe(url):
-    cmd = ["yt-dlp", "--no-warnings", "--no-playlist"] + (["--cookies", COOKIES_FILE] if os.path.exists(COOKIES_FILE) else []) + ["-J", url]
+    cmd = ["yt-dlp", "--no-warnings", "--no-playlist", "--js-runtimes", "node", "--remote-components", "ejs:github"] + (["--cookies", COOKIES_FILE] if os.path.exists(COOKIES_FILE) else []) + ["-J", url]
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
     if p.returncode != 0:
         raise RuntimeError((p.stderr or "yt-dlp failed").strip().splitlines()[-1][:160])

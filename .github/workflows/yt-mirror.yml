@@ -40,7 +40,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
-          pip install -U yt-dlp
+          pip install -U "yt-dlp[default]"
+          node --version
 
       - name: Cookies (optional)
         if: steps.gate.outputs.go == 'true'
