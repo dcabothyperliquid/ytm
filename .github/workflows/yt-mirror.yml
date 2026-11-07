@@ -47,7 +47,25 @@ jobs:
         env:
           YT_COOKIES: ${{ secrets.YT_COOKIES }}
         run: |
-          if [ -n "$YT_COOKIES" ]; then printf '%s\n' "$YT_COOKIES" > cookies.txt; fi
+          if [ -n "$YT_COOKIES" ]; then
+            printf '%s\n' "$YT_COOKIES" > cookies_raw
+            python - <<'PY'
+          import json
+          raw = open("cookies_raw").read().strip()
+          if raw[:1] in "[{":
+              d = json.loads(raw)
+              d = d.get("cookies", d) if isinstance(d, dict) else d
+              out = ["# Netscape HTTP Cookie File"]
+              for c in d:
+                  dom = c.get("domain", "")
+                  exp = int(c.get("expirationDate") or c.get("expires") or 0)
+                  out.append("\t".join([dom, "TRUE" if dom.startswith(".") else "FALSE", c.get("path", "/"),
+                                        "TRUE" if c.get("secure") else "FALSE", str(max(exp, 0)), c["name"], c["value"]]))
+              raw = "\n".join(out)
+          open("cookies.txt", "w").write(raw + "\n")
+          PY
+            rm -f cookies_raw
+          fi
 
       - name: Watch + relay
         if: steps.gate.outputs.go == 'true'
