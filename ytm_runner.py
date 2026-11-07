@@ -393,7 +393,7 @@ def ffmpeg_cmd(hls, rtmp):
                 chain += ",delogo=x=%s:y=%s:w=%s:h=%s" % tuple(bx.split(":"))
     fc = chain + "[bg];[1:v]scale=%s:-1[lg];[bg][lg]overlay=%s,split=2[v][s];[s]fps=1/20,scale=640:-1[snap]" % (lw, pos)
     return (base + ["-i", logo, "-filter_complex", fc, "-map", "[v]", "-map", "0:a?",
-            "-c:v", "libx264", "-preset", "fast", "-profile:v", "high", "-crf", "18", "-maxrate", "6000k", "-bufsize", "12000k",
+            "-c:v", "libx264", "-preset", os.environ.get("YTM_PRESET", "veryfast"), "-profile:v", "high", "-crf", "20", "-maxrate", "6000k", "-bufsize", "12000k",
             "-g", "60", "-pix_fmt", "yuv420p", "-c:a", "copy", "-f", "flv", rtmp,
             "-map", "[snap]", "-q:v", "5", "-f", "image2", "-update", "1", "-y", "/tmp/ytm_frame.jpg"])
 
