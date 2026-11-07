@@ -266,8 +266,28 @@ def probe(url):
 
 
 def ffmpeg_cmd(hls, rtmp):
-    return ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-stats", "-reconnect", "1", "-reconnect_streamed", "1",
-            "-reconnect_delay_max", "5", "-fflags", "+genpts", "-i", hls, "-c", "copy", "-f", "flv", rtmp]
+    base = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-stats", "-reconnect", "1", "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "5", "-fflags", "+genpts", "-i", hls]
+    logo = os.environ.get("YTM_LOGO", "logo.png")
+    if not os.path.isfile(logo):
+        return base + ["-c", "copy", "-f", "flv", rtmp]          # no logo file -> old behaviour (stream copy)
+    # logo mode: re-encode. Frame is forced to 1280x720, source-channel logo corners are smeared (delogo),
+    # then YOUR logo goes top-right on top. YTM_DELOGO="x:y:w:h;x:y:w:h" overrides the boxes, YTM_DELOGO=off disables.
+    # YTM_LOGO_POS = overlay expr (default top-right), YTM_LOGO_W = logo width px (default 150).
+    boxes = os.environ.get("YTM_DELOGO", "").strip()
+    if not boxes:
+        boxes = "10:10:200:110;1100:10:170:170;10:600:200:110;1070:600:200:110"   # TL;TR(under my logo);BL;BR
+    pos = os.environ.get("YTM_LOGO_POS", "W-w-20:20")
+    lw = os.environ.get("YTM_LOGO_W", "150")
+    chain = "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1"
+    if boxes.lower() != "off":
+        for bx in boxes.split(";"):
+            if bx.count(":") == 3:
+                chain += ",delogo=x=%s:y=%s:w=%s:h=%s" % tuple(bx.split(":"))
+    fc = chain + "[bg];[1:v]scale=%s:-1[lg];[bg][lg]overlay=%s[v]" % (lw, pos)
+    return (base + ["-i", logo, "-filter_complex", fc, "-map", "[v]", "-map", "0:a?",
+            "-c:v", "libx264", "-preset", "veryfast", "-b:v", "2500k", "-maxrate", "2500k", "-bufsize", "5000k",
+            "-g", "60", "-pix_fmt", "yuv420p", "-c:a", "copy", "-f", "flv", rtmp])
 
 
 class Relay:
