@@ -257,6 +257,9 @@ def _oauth_token():
         return json.loads(r.read())["access_token"]
 
 
+DIAG = {}
+
+
 def set_caption(src_title, channel=""):
     """Returns 'done', 'wait' (our broadcast not active yet) or 'skip' (no OAuth secrets)."""
     tok = _oauth_token()
@@ -273,6 +276,15 @@ def set_caption(src_title, channel=""):
 
     items = call("GET", "liveBroadcasts", {"part": "snippet,status", "broadcastStatus": "active", "maxResults": 5}).get("items", [])
     if not items:
+        try:                                   # debug: what does YouTube see on OUR channel? (no keys stored)
+            ls = call("GET", "liveStreams", {"part": "snippet,status", "mine": "true", "maxResults": 5}).get("items", [])
+            lb = call("GET", "liveBroadcasts", {"part": "snippet,status", "mine": "true", "maxResults": 5}).get("items", [])
+            DIAG["yt"] = {"streams": [(i["snippet"].get("title"), i["status"].get("streamStatus"),
+                                       (i["status"].get("healthStatus") or {}).get("status")) for i in ls],
+                          "broadcasts": [(i["snippet"].get("title", "")[:40], i["status"].get("lifeCycleStatus"),
+                                          i["status"].get("privacyStatus")) for i in lb]}
+        except Exception as e:
+            DIAG["yt"] = "diag error: %s" % str(e)[:150]
         return "wait"
     it = items[0]
     title, desc = caption_from(src_title, channel)
@@ -383,6 +395,8 @@ class Relay:
         r = self.st.get("relay")
         if r and self.proc:
             self._tail()
+            if DIAG.get("yt"):
+                self.st["yt_diag"] = DIAG["yt"]
         if not r or not self.proc or self.proc.poll() is None:
             return
         code = self.proc.poll()
