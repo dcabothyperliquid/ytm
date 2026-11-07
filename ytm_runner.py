@@ -260,6 +260,42 @@ def _oauth_token():
 DIAG = {}
 
 
+def _ensure_broadcast(call, src_title, channel):
+    """No ACTIVE broadcast on our channel: bind/create one (public, auto-start) so the incoming stream goes live.
+    Returns 'wait'; the next caption tick finds the active broadcast and sets the caption."""
+    try:
+        ls = call("GET", "liveStreams", {"part": "snippet,status", "mine": "true", "maxResults": 5}).get("items", [])
+        lb = call("GET", "liveBroadcasts", {"part": "snippet,status", "mine": "true", "maxResults": 10}).get("items", [])
+        DIAG["yt"] = {"streams": [(i["snippet"].get("title"), i["status"].get("streamStatus"),
+                                   (i["status"].get("healthStatus") or {}).get("status")) for i in ls],
+                      "broadcasts": [(i["snippet"].get("title", "")[:40], i["status"].get("lifeCycleStatus")) for i in lb]}
+        st = next((i for i in ls if i["status"].get("streamStatus") == "active"), None)
+        if not st:
+            return "wait"                                   # nothing arriving yet
+        bc = next((i for i in lb if i["status"].get("lifeCycleStatus") in ("created", "ready", "testing", "liveStarting")), None)
+        if bc is None:
+            if time.time() - DIAG.get("bc_at", 0) < 180:
+                return "wait"                               # created one a moment ago, give YouTube time
+            title, desc = caption_from(src_title, channel)
+            now = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+            bc = call("POST", "liveBroadcasts", {"part": "snippet,status,contentDetails"}, {
+                "snippet": {"title": title, "description": desc, "scheduledStartTime": now},
+                "status": {"privacyStatus": "public", "selfDeclaredMadeForKids": False},
+                "contentDetails": {"enableAutoStart": True, "enableAutoStop": False, "enableDvr": True,
+                                   "monitorStream": {"enableMonitorStream": False}}})
+            DIAG["bc_at"] = time.time()
+            log("broadcast created: " + title)
+            DIAG["yt"]["created"] = title
+        call("POST", "liveBroadcasts/bind", {"id": bc["id"], "part": "id,contentDetails", "streamId": st["id"]}, {})
+        try:
+            call("POST", "liveBroadcasts/transition", {"broadcastStatus": "live", "id": bc["id"], "part": "status"}, {})
+        except Exception as e:
+            DIAG["yt"]["transition"] = str(e)[:100]
+    except Exception as e:
+        DIAG["yt"] = "ensure error: %s" % str(e)[:200]
+    return "wait"
+
+
 def set_caption(src_title, channel=""):
     """Returns 'done', 'wait' (our broadcast not active yet) or 'skip' (no OAuth secrets)."""
     tok = _oauth_token()
@@ -276,16 +312,7 @@ def set_caption(src_title, channel=""):
 
     items = call("GET", "liveBroadcasts", {"part": "snippet,status", "broadcastStatus": "active", "maxResults": 5}).get("items", [])
     if not items:
-        try:                                   # debug: what does YouTube see on OUR channel? (no keys stored)
-            ls = call("GET", "liveStreams", {"part": "snippet,status", "mine": "true", "maxResults": 5}).get("items", [])
-            lb = call("GET", "liveBroadcasts", {"part": "snippet,status", "mine": "true", "maxResults": 5}).get("items", [])
-            DIAG["yt"] = {"streams": [(i["snippet"].get("title"), i["status"].get("streamStatus"),
-                                       (i["status"].get("healthStatus") or {}).get("status")) for i in ls],
-                          "broadcasts": [(i["snippet"].get("title", "")[:40], i["status"].get("lifeCycleStatus"),
-                                          i["status"].get("privacyStatus")) for i in lb]}
-        except Exception as e:
-            DIAG["yt"] = "diag error: %s" % str(e)[:150]
-        return "wait"
+        return _ensure_broadcast(call, src_title, channel)
     it = items[0]
     title, desc = caption_from(src_title, channel)
     sn = {"title": title, "description": desc, "scheduledStartTime": it["snippet"]["scheduledStartTime"]}
@@ -327,7 +354,7 @@ def ffmpeg_cmd(hls, rtmp):
         boxes = "10:10:200:110;1100:10:170:170;10:600:200:110;1070:600:200:110"   # TL;TR(under my logo);BL;BR
     pos = os.environ.get("YTM_LOGO_POS", "W-w-20:20")
     lw = os.environ.get("YTM_LOGO_W", "150")
-    chain = "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1"
+    chain = "[0:v]fps=30,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1"
     if boxes.lower() != "off":
         for bx in boxes.split(";"):
             if bx.count(":") == 3:
