@@ -185,27 +185,63 @@ class Detector:
 
 
 # ── auto caption (title/description of OUR live; needs YT_CLIENT_ID/SECRET/REFRESH_TOKEN) ──
-def caption_from(src):
-    """Source title -> (title, description) in the same style, e.g.
+_SPORTS = [("kho kho", "Kho Kho"), ("khokho", "Kho Kho"), ("kabaddi", "Kabaddi"), ("cricket", "Cricket"),
+           ("football", "Football"), ("soccer", "Football"), ("volleyball", "Volleyball"), ("hockey", "Hockey"),
+           ("basketball", "Basketball"), ("badminton", "Badminton"), ("tennis", "Tennis"),
+           ("kushti", "Wrestling"), ("wrestling", "Wrestling"), ("dangal", "Wrestling")]
+
+
+def detect_sport(*texts):
+    t = " ".join(texts).lower()
+    for k, name in _SPORTS:
+        if k in t:
+            return name
+    return ""
+
+
+def _clean_seg(t):
+    t = re.sub(r"[^\w\s\-\.,'&()/:]", " ", t or "")          # drop emoji / symbols
+    return " ".join(t.split())
+
+
+def caption_from(src, channel=""):
+    """Source title -> (title, description) for OUR live. Sport is detected from the source title/channel, so
+    cricket -> cricket, kabaddi -> kabaddi, football -> football. Source channel branding/emoji/dates are dropped.
     'Quarter Final-A vs B || Bakhra Cup Azamgarh' -> 'Quarter Final - A vs B || Bakhra Cup Azamgarh Live'."""
-    parts = [p.strip() for p in (src or "").split("||") if p.strip()]
-    main, tour = (parts[0] if parts else ""), (parts[1] if len(parts) > 1 else "")
+    sport = detect_sport(src, channel)
     fix = lambda t: " ".join(w.title() if (w.isupper() and len(w) > 3 and w.isalpha()) else w for w in t.split())
+    if "||" in (src or ""):
+        parts = [_clean_seg(p) for p in src.split("||") if _clean_seg(p)]
+    else:
+        ch = re.sub(r"\W+", "", (channel or "").lower())
+        parts = []
+        for p in (src or "").split("|"):
+            p = _clean_seg(p)
+            pn = re.sub(r"\W+", "", p.lower())
+            if not p or re.search(r"[^\x00-\x7f]", p) or re.fullmatch(r"[\d\W]+", p) or re.fullmatch(r"live", pn):
+                continue                                           # empty / Hindi / date-only / bare "live"
+            if (ch and (pn == ch or pn in ch)) or re.fullmatch(r"(?:%s)?(?:haryana|live|official)+" % sport.lower().replace(" ", ""), pn):
+                continue                                           # source channel's own branding
+            parts.append(p)
+        parts = parts[:2]
+    main, tour = (parts[0] if parts else ""), (parts[1] if len(parts) > 1 else "")
     main, tour = fix(main), fix(tour)
     stage, teams = "", main
     m = re.match(r"^([^-]{2,40}?)\s*-\s*(.+)$", main)
     if m:
         stage, teams = m.group(1).strip(), m.group(2).strip()
     title = ("%s - %s" % (stage, teams) if stage else teams)
+    sp = sport or "Sports"
     if tour:
-        cands = [title + " || " + tour + " Live", title + " || " + tour]
+        tl = tour if "live" in tour.lower() else tour + " Live"
+        cands = [title + " || " + tl, title + " || " + tour]
     else:
-        cands = [title if "live" in title.lower() else title + " | Live Cricket", title]
+        cands = [title if "live" in title.lower() else title + " | Live " + sp, title]
     title = next((c for c in cands if len(c) <= 100), cands[-1])
-    desc = [(tour + " - " + stage) if (tour and stage) else (tour or stage or "Live Cricket"), teams,
-            "Live cricket match coverage.", ""]
+    desc = [(tour + " - " + stage) if (tour and stage) else (tour or stage or "Live " + sp), teams,
+            "Live %s match coverage." % sp.lower(), ""]
     tag = "".join(re.sub(r"[^0-9A-Za-z]", "", w).capitalize() for w in tour.split()[:2])
-    desc.append(("#%s " % tag if tag else "") + "#LiveCricket")
+    desc.append((("#%s " % tag) if tag else "") + "#Live" + sp.replace(" ", ""))
     if len(title) > 100:
         title = title[:100].rsplit(" ", 1)[0]
     return title.strip(), "\n".join(desc)
@@ -221,7 +257,7 @@ def _oauth_token():
         return json.loads(r.read())["access_token"]
 
 
-def set_caption(src_title):
+def set_caption(src_title, channel=""):
     """Returns 'done', 'wait' (our broadcast not active yet) or 'skip' (no OAuth secrets)."""
     tok = _oauth_token()
     if not tok:
@@ -239,7 +275,7 @@ def set_caption(src_title):
     if not items:
         return "wait"
     it = items[0]
-    title, desc = caption_from(src_title)
+    title, desc = caption_from(src_title, channel)
     sn = {"title": title, "description": desc, "scheduledStartTime": it["snippet"]["scheduledStartTime"]}
     call("PUT", "liveBroadcasts", {"part": "snippet"}, {"id": it["id"], "snippet": sn})
     log("caption set: " + title)
@@ -360,7 +396,7 @@ class Relay:
         r["caption_try"] = now
         r["caption_n"] = r.get("caption_n", 0) + 1
         try:
-            res = (_set or set_caption)(r.get("title", ""))
+            res = (_set or set_caption)(r.get("title", ""), r.get("channel", ""))
         except Exception as e:
             log("caption error: %s" % str(e)[:120])
             res = "wait"
