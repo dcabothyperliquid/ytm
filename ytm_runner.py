@@ -30,6 +30,8 @@ ENDED_GRACE = 90          # s the source may be missing from the live list befor
 RETRY_COOLDOWN = 120
 MAX_ATTEMPTS = 3
 MAX_RESTARTS = 8
+STALL_SECS = 30           # ffmpeg output time not advancing this long -> source is stuck -> recover/failover
+PROBE_RETRIES = 3         # consecutive failed probes (5s apart) before giving up on a source
 HEARTBEAT = 90            # state is re-written at least this often so the dashboard sees the worker as alive
 CFG_EVERY = 15
 COOKIES_FILE = "cookies.txt"
@@ -373,12 +375,16 @@ class Relay:
 
     def _spawn(self, hls):
         self._elog = open("/tmp/ffmpeg.log", "wb")
+        self._last_t, self._last_t_at = None, time.time()
         return self._popen(ffmpeg_cmd(hls, self.rtmp), stderr=self._elog)
 
     def _tail(self):
         """last ffmpeg output (stream key masked) -> state, so it is visible without Actions logs"""
         try:
-            t = open("/tmp/ffmpeg.log", "rb").read()[-500:].decode("utf8", "replace").replace("\r", "\n")
+            with open("/tmp/ffmpeg.log", "rb") as f:
+                f.seek(0, 2)
+                f.seek(max(0, f.tell() - 600))
+                t = f.read().decode("utf8", "replace").replace("\r", "\n")
             self.st["ffmpeg_tail"] = re.sub(r"rtmps?://\S+", "rtmp://***", t)[-350:]
         except Exception:
             pass
@@ -434,31 +440,93 @@ class Relay:
             "video_id": c["video_id"], "title": c["title"], "channel": c["channel"], "started": None,
             "ended": int(time.time()), "outcome": "failed", "note": note[:120]})
 
+    @staticmethod
+    def _tok(title):
+        segs = [x for x in (_clean_seg(p) for p in re.split(r"\|+", title or "")) if x and not re.search(r"[^\x00-\x7f]", x)]
+        seg = segs[0] if segs else (title or "")
+        return set(re.findall(r"[a-z0-9]+", seg.lower())) - {"live", "match", "vs", "v", "the", "of"}
+
+    def _pick_alt(self, cur, now):
+        """Best replacement source: same match (similar first title segment) first, then others in channel-priority order."""
+        ct = self._tok(cur.get("title"))
+        cands = [c for c in getattr(self, "live_last", []) if c["video_id"] != cur.get("video_id") and not self._blocked(c["video_id"], now)]
+        def sim(c):
+            t = self._tok(c["title"])
+            return len(ct & t) / float(len(ct | t) or 1)
+        same = sorted([c for c in cands if sim(c) >= 0.6], key=lambda c: -sim(c))
+        return same + [c for c in cands if c not in same]
+
+    def _failover(self, outcome, note):
+        """Source broke/ended: close it and IMMEDIATELY start the next best live (same match elsewhere, else next in priority)."""
+        r = dict(self.st.get("relay") or {})
+        now = time.time()
+        self._finish(outcome, note)
+        for c in self._pick_alt(r, now):
+            self.start(c)
+            if self.st.get("relay"):
+                self.st["relay"]["failover_from"] = r.get("video_id")
+                log("failover -> " + c["title"][:70])
+                return True
+        return False
+
+    def _stalled(self):
+        """ffmpeg alive but its output time stopped advancing (source frozen): kill it so recovery kicks in."""
+        try:
+            with open("/tmp/ffmpeg.log", "rb") as f:
+                f.seek(0, 2)
+                f.seek(max(0, f.tell() - 800))
+                m = re.findall(r"time=(\d+):(\d+):([\d.]+)", f.read().decode("utf8", "replace"))
+        except Exception:
+            return False
+        t = (int(m[-1][0]) * 3600 + int(m[-1][1]) * 60 + float(m[-1][2])) if m else None
+        if t != getattr(self, "_last_t", None):
+            self._last_t, self._last_t_at = t, time.time()
+            return False
+        return time.time() - getattr(self, "_last_t_at", time.time()) > STALL_SECS
+
     def poll(self):
-        """Call every few seconds: handle ffmpeg exiting."""
+        """Call every few seconds: detect ffmpeg exit / stall, recover the same source fast, else fail over."""
         r = self.st.get("relay")
         if r and self.proc:
             self._tail()
             if DIAG.get("yt"):
                 self.st["yt_diag"] = DIAG["yt"]
-        if not r or not self.proc or self.proc.poll() is None:
+            if self.proc.poll() is None and self._stalled():
+                log("ffmpeg stalled > %ds -> kill" % STALL_SECS)
+                self.proc.terminate()
+                try:
+                    self.proc.wait(5)
+                except Exception:
+                    self.proc.kill()
+                r["stalled"] = r.get("stalled", 0) + 1
+        if not r:
             return
-        code = self.proc.poll()
-        log("ffmpeg exit %s" % code)
-        self.proc = None
+        now = time.time()
+        if self.proc is not None:
+            if self.proc.poll() is None:
+                return
+            log("ffmpeg exit %s" % self.proc.poll())
+            self.proc = None
+            r["retry_at"], r["probe_fail"] = 0, 0
+        elif now < r.get("retry_at", 0):
+            return                                           # waiting for the next quick probe retry
         try:
             is_live, hls = self._probe(r["url"])
         except Exception as e:
             is_live, hls = None, None
-            note = "probe: %s" % e
+            log("probe error: %s" % str(e)[:100])
         if is_live and hls and self.restarts < MAX_RESTARTS:
             self.restarts += 1
             log("source still live -> restart ffmpeg (%d)" % self.restarts)
             self.proc = self._spawn(hls)
         elif is_live is False:
-            self._finish("ended", "source ended")
+            if not self._failover("ended", "source ended"):
+                pass
+        elif r.get("probe_fail", 0) + 1 < PROBE_RETRIES and is_live is None:
+            r["probe_fail"] = r.get("probe_fail", 0) + 1
+            r["retry_at"] = now + 5
         else:
-            self._finish("failed", "ffmpeg/probe failed")
+            self._failover("failed", "ffmpeg/probe failed")
 
     def caption_tick(self, now, _set=None):
         """Retry every ~25s (max 12x) until our broadcast is active, then set title/description once."""
@@ -488,6 +556,7 @@ class Relay:
         return any(x["video_id"] == vid and x["outcome"] in ("ended", "stopped") for x in h[:10])
 
     def step(self, live, cfg, now):
+        self.live_last = live
         r = self.st.get("relay")
         cap = int(cfg.get("daily_cap_h", 12)) * 60
         if r:
