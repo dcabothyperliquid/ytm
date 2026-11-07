@@ -1,1 +1,1 @@
-{"enabled":true,"channels":[{"kind":"handle","value":"@Azamgarhcricketlive","name":"Azamgarh Cricket Live"}],"keywords":"tennis,cricket","poll_secs":60,"daily_cap_h":12,"window_start":0,"window_end":24,"commands":[]}
+{"enabled":true,"channels":[{"kind":"handle","value":"@Azamgarhcricketlive","name":"Azamgarh Cricket Live"}],"keywords":"","poll_secs":60,"daily_cap_h":12,"window_start":0,"window_end":24,"commands":[]}
