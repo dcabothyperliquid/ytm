@@ -351,18 +351,19 @@ def ffmpeg_cmd(hls, rtmp):
     # YTM_LOGO_POS = overlay expr (default top-right), YTM_LOGO_W = logo width px (default 150).
     boxes = os.environ.get("YTM_DELOGO", "").strip()
     if not boxes:
-        boxes = "10:10:200:110;1100:10:170:170;10:600:200:110;1070:600:200:110"   # TL;TR(under my logo);BL;BR
+        boxes = "10:10:200:110;1030:10:240:60;1090:10:180:190;860:335:290:55;10:600:200:110;1070:600:200:110"   # TL;TR strip;TR(under my logo);mid-right watermark;BL;BR
     pos = os.environ.get("YTM_LOGO_POS", "W-w-20:20")
-    lw = os.environ.get("YTM_LOGO_W", "150")
+    lw = os.environ.get("YTM_LOGO_W", "170")
     chain = "[0:v]fps=30,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1"
     if boxes.lower() != "off":
         for bx in boxes.split(";"):
             if bx.count(":") == 3:
                 chain += ",delogo=x=%s:y=%s:w=%s:h=%s" % tuple(bx.split(":"))
-    fc = chain + "[bg];[1:v]scale=%s:-1[lg];[bg][lg]overlay=%s[v]" % (lw, pos)
+    fc = chain + "[bg];[1:v]scale=%s:-1[lg];[bg][lg]overlay=%s,split=2[v][s];[s]fps=1/20,scale=640:-1[snap]" % (lw, pos)
     return (base + ["-i", logo, "-filter_complex", fc, "-map", "[v]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", "veryfast", "-b:v", "2500k", "-maxrate", "2500k", "-bufsize", "5000k",
-            "-g", "60", "-pix_fmt", "yuv420p", "-c:a", "copy", "-f", "flv", rtmp])
+            "-g", "60", "-pix_fmt", "yuv420p", "-c:a", "copy", "-f", "flv", rtmp,
+            "-map", "[snap]", "-q:v", "5", "-f", "image2", "-update", "1", "-y", "/tmp/ytm_frame.jpg"])
 
 
 class Relay:
@@ -381,6 +382,22 @@ class Relay:
             self.st["ffmpeg_tail"] = re.sub(r"rtmps?://\S+", "rtmp://***", t)[-350:]
         except Exception:
             pass
+        now = time.time()
+        if now - getattr(self, "_snap_at", 0) > 120 and os.path.isfile("/tmp/ytm_frame.jpg"):
+            self._snap_at = now                    # what viewers really see -> ytm_frame.jpg on the data branch
+            try:
+                sha = None
+                try:
+                    sha = gh("GET", "contents/ytm_frame.jpg?ref=%s" % BRANCH).get("sha")
+                except urllib.error.HTTPError:
+                    pass
+                body = {"message": "frame", "branch": BRANCH,
+                        "content": base64.b64encode(open("/tmp/ytm_frame.jpg", "rb").read()).decode()}
+                if sha:
+                    body["sha"] = sha
+                gh("PUT", "contents/ytm_frame.jpg", body)
+            except Exception as e:
+                log("frame upload: %s" % str(e)[:80])
 
     # -- lifecycle
     def _finish(self, outcome, note=""):
