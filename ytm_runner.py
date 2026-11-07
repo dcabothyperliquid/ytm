@@ -323,6 +323,36 @@ def set_caption(src_title, channel=""):
     return "done"
 
 
+def end_broadcast():
+    """Relay stopped: move our ACTIVE broadcast to 'complete' so the channel stops showing LIVE.
+    (Broadcasts are created with enableAutoStop=False, so killing ffmpeg alone leaves them live.)"""
+    tok = _oauth_token()
+    if not tok:
+        return "skip"
+    H = {"Authorization": "Bearer " + tok, "Content-Type": "application/json"}
+
+    def call(method, path, params):
+        url = _API + path + "?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url, data=b"{}" if method == "POST" else None, headers=H, method=method)
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read() or b"{}")
+
+    n = 0
+    try:
+        items = call("GET", "liveBroadcasts", {"part": "id,status", "broadcastStatus": "active", "maxResults": 10}).get("items", [])
+        for it in items:
+            try:
+                call("POST", "liveBroadcasts/transition", {"broadcastStatus": "complete", "id": it["id"], "part": "status"})
+                n += 1
+            except Exception as e:
+                log("end broadcast %s: %s" % (it["id"], str(e)[:100]))
+    except Exception as e:
+        log("end_broadcast error: %s" % str(e)[:120])
+        return "error"
+    log("broadcast(s) completed: %d" % n)
+    return "done"
+
+
 # ── relay ────────────────────────────────────────────────────────────────
 def probe(url):
     cmd = ["yt-dlp", "--no-warnings", "--no-playlist", "--js-runtimes", "node", "--remote-components", "ejs:github"] + (["--cookies", COOKIES_FILE] if os.path.exists(COOKIES_FILE) else []) + ["-J", url]
@@ -415,6 +445,11 @@ class Relay:
             except Exception:
                 self.proc.kill()
         self.proc = None
+        try:
+            if outcome in ("stopped", "ended"):      # not for "interrupted" (job chain resumes) / failover
+                end_broadcast()
+        except Exception as e:
+            log("end_broadcast: %s" % str(e)[:100])
         self.st.setdefault("history", []).insert(0, {
             "video_id": r.get("video_id"), "title": r.get("title"), "channel": r.get("channel"),
             "started": r.get("started"), "ended": int(time.time()), "outcome": outcome, "note": note})
@@ -686,4 +721,8 @@ def cfg_poll(st):
 
 
 if __name__ == "__main__":
-    sys.exit(gate() if (sys.argv[1:] or ["run"])[0] == "gate" else run())
+    _cmd = (sys.argv[1:] or ["run"])[0]
+    if _cmd == "endlive":                       # one-off: complete any ACTIVE broadcast on our channel
+        print("endlive:", end_broadcast())
+        sys.exit(0)
+    sys.exit(gate() if _cmd == "gate" else run())
