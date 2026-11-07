@@ -331,6 +331,18 @@ class Relay:
         self.st, self.rtmp, self._probe, self._popen = state, rtmp, _probe, _popen
         self.proc, self.restarts = None, 0
 
+    def _spawn(self, hls):
+        self._elog = open("/tmp/ffmpeg.log", "wb")
+        return self._popen(ffmpeg_cmd(hls, self.rtmp), stderr=self._elog)
+
+    def _tail(self):
+        """last ffmpeg output (stream key masked) -> state, so it is visible without Actions logs"""
+        try:
+            t = open("/tmp/ffmpeg.log", "rb").read()[-500:].decode("utf8", "replace").replace("\r", "\n")
+            self.st["ffmpeg_tail"] = re.sub(r"rtmps?://\S+", "rtmp://***", t)[-350:]
+        except Exception:
+            pass
+
     # -- lifecycle
     def _finish(self, outcome, note=""):
         r = self.st.get("relay") or {}
@@ -357,7 +369,7 @@ class Relay:
             return                       # not actually live (yet); try again next cycle
         log("relay start: " + c["title"][:80])
         self.restarts = 0
-        self.proc = self._popen(ffmpeg_cmd(hls, self.rtmp))
+        self.proc = self._spawn(hls)
         self.st["relay"] = {"video_id": c["video_id"], "title": c["title"], "channel": c["channel"],
                             "url": c["url"], "started": int(time.time()), "not_live_since": None}
 
@@ -369,6 +381,8 @@ class Relay:
     def poll(self):
         """Call every few seconds: handle ffmpeg exiting."""
         r = self.st.get("relay")
+        if r and self.proc:
+            self._tail()
         if not r or not self.proc or self.proc.poll() is None:
             return
         code = self.proc.poll()
@@ -382,7 +396,7 @@ class Relay:
         if is_live and hls and self.restarts < MAX_RESTARTS:
             self.restarts += 1
             log("source still live -> restart ffmpeg (%d)" % self.restarts)
-            self.proc = self._popen(ffmpeg_cmd(hls, self.rtmp))
+            self.proc = self._spawn(hls)
         elif is_live is False:
             self._finish("ended", "source ended")
         else:
