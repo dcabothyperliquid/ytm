@@ -30,6 +30,7 @@ ENDED_GRACE = 90          # s the source may be missing from the live list befor
 RETRY_COOLDOWN = 120
 MAX_ATTEMPTS = 3
 MAX_RESTARTS = 8
+KICK_DOWN_SECS = int(os.environ.get("YTM_KICK_DOWN", "60"))   # ingest pause so YouTube sees a fresh stream start (auto-start)
 STALL_SECS = 30           # ffmpeg output time not advancing this long -> source is stuck -> recover/failover
 PROBE_RETRIES = 3         # consecutive failed probes (5s apart) before giving up on a source
 HEARTBEAT = 90            # state is re-written at least this often so the dashboard sees the worker as alive
@@ -314,6 +315,49 @@ def _ensure_broadcast(call, src_title, channel):
     return "wait"
 
 
+def _prepare(call, src_title, channel):
+    """Make sure a bound broadcast exists BEFORE ffmpeg starts sending: its enableAutoStart then fires on the fresh ingest.
+    (Bound while the stream is already flowing, auto-start never fires and a manual transition gives invalidTransition.)
+    Returns 'fresh' (stream idle, auto-start will fire), 'busy' (stream already active: may need a kick) or 'nostream'."""
+    ls = call("GET", "liveStreams", {"part": "snippet,status", "mine": "true", "maxResults": 5}).get("items", [])
+    if not ls:
+        return "nostream"
+    st = next((i for i in ls if i["status"].get("streamStatus") == "active"), ls[0])
+    lb = call("GET", "liveBroadcasts", {"part": "snippet,status,contentDetails", "mine": "true", "maxResults": 10}).get("items", [])
+    bc = next((i for i in lb if i["status"].get("lifeCycleStatus") in ("created", "ready", "testing", "liveStarting", "live")), None)
+    changed = False
+    if bc is None:
+        title, desc = caption_from(src_title, channel)
+        now = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+        bc = call("POST", "liveBroadcasts", {"part": "snippet,status,contentDetails"}, {
+            "snippet": {"title": title, "description": desc, "scheduledStartTime": now},
+            "status": {"privacyStatus": "public", "selfDeclaredMadeForKids": False},
+            "contentDetails": {"enableAutoStart": True, "enableAutoStop": False, "enableDvr": True,
+                               "monitorStream": {"enableMonitorStream": False}}})
+        DIAG["bc_at"] = time.time()
+        log("broadcast pre-created: " + title)
+        changed = True
+    if (bc.get("contentDetails") or {}).get("boundStreamId") != st["id"]:
+        call("POST", "liveBroadcasts/bind", {"id": bc["id"], "part": "id,contentDetails", "streamId": st["id"]}, {})
+        changed = True
+    return "busy" if (changed and st["status"].get("streamStatus") == "active") else "fresh"
+
+
+def prepare_broadcast(src_title, channel=""):
+    tok = _oauth_token()
+    if not tok:
+        return "skip"
+    H = {"Authorization": "Bearer " + tok, "Content-Type": "application/json"}
+
+    def call(method, path, params, body=None):
+        url = _API + path + "?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None,
+                                     headers=H, method=method)
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read() or b"{}")
+    return _prepare(call, src_title, channel)
+
+
 def set_caption(src_title, channel=""):
     """Returns 'done', 'wait' (our broadcast not active yet) or 'skip' (no OAuth secrets)."""
     tok = _oauth_token()
@@ -542,9 +586,16 @@ class Relay:
             return                       # not actually live (yet); try again next cycle
         log("relay start: " + c["title"][:80])
         self.restarts = 0
+        prep = None
+        try:
+            prep = prepare_broadcast(c["title"], c["channel"])
+        except Exception as e:
+            log("prepare broadcast failed: %s" % str(e)[:120])
         self.proc = self._spawn(hls)
         self.st["relay"] = {"video_id": c["video_id"], "title": c["title"], "channel": c["channel"],
                             "url": c["url"], "started": int(time.time()), "not_live_since": None}
+        if prep == "busy":
+            self.st["relay"]["kick_early"] = True
 
     def _record_fail(self, c, note):
         self.st.setdefault("history", []).insert(0, {
@@ -653,6 +704,25 @@ class Relay:
             res = "wait"
         if res in ("done", "skip"):                     # never give up while broadcast is not live (retry slower after 12)
             r["caption_done"] = True
+        elif not r.get("kicked") and r["caption_n"] >= (2 if r.get("kick_early") else 4):
+            yt = DIAG.get("yt")
+            bcs = yt.get("broadcasts", []) if isinstance(yt, dict) else []
+            if any(b[1] in ("ready", "testing") for b in bcs):   # still not live although a broadcast is waiting
+                self._kick_ingest(r)
+
+    def _kick_ingest(self, r):
+        """Stuck on 'ready' (stream was flowing when the broadcast got bound): pause ingest so YouTube marks the stream idle,
+        then the normal restart path reconnects = a fresh stream start, which fires the bound broadcast's auto-start."""
+        r["kicked"] = True
+        log("broadcast stuck on ready -> pausing ingest %ds to re-trigger auto-start" % KICK_DOWN_SECS)
+        if self.proc is not None and self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(5)
+            except Exception:
+                self.proc.kill()
+        self.proc = None
+        r["retry_at"], r["probe_fail"] = time.time() + KICK_DOWN_SECS, 0
 
     def stop(self, outcome="stopped", note="manual"):
         if self.st.get("relay"):
