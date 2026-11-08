@@ -267,7 +267,7 @@ def _ensure_broadcast(call, src_title, channel):
     Returns 'wait'; the next caption tick finds the active broadcast and sets the caption."""
     try:
         ls = call("GET", "liveStreams", {"part": "snippet,status", "mine": "true", "maxResults": 5}).get("items", [])
-        lb = call("GET", "liveBroadcasts", {"part": "snippet,status", "mine": "true", "maxResults": 10}).get("items", [])
+        lb = call("GET", "liveBroadcasts", {"part": "snippet,status,contentDetails", "mine": "true", "maxResults": 10}).get("items", [])
         DIAG["yt"] = {"streams": [(i["snippet"].get("title"), i["status"].get("streamStatus"),
                                    (i["status"].get("healthStatus") or {}).get("status")) for i in ls],
                       "broadcasts": [(i["snippet"].get("title", "")[:40], i["status"].get("lifeCycleStatus")) for i in lb]}
@@ -288,7 +288,8 @@ def _ensure_broadcast(call, src_title, channel):
             DIAG["bc_at"] = time.time()
             log("broadcast created: " + title)
             DIAG["yt"]["created"] = title
-        call("POST", "liveBroadcasts/bind", {"id": bc["id"], "part": "id,contentDetails", "streamId": st["id"]}, {})
+        if (bc.get("contentDetails") or {}).get("boundStreamId") != st["id"]:
+            call("POST", "liveBroadcasts/bind", {"id": bc["id"], "part": "id,contentDetails", "streamId": st["id"]}, {})
         def _err(e):
             try:
                 return "%s %s" % (e, e.read().decode("utf8", "ignore")[:300])
@@ -299,7 +300,10 @@ def _ensure_broadcast(call, src_title, channel):
         except Exception as e:
             DIAG["yt"]["transition"] = _err(e)          # full reason (invalidTransition etc.), not just "403"
             log("transition live failed: " + DIAG["yt"]["transition"])
-            try:                                        # fallback: ready -> testing -> live
+            try:                                        # fallback: ready -> testing -> live (once per broadcast: 50 units each)
+                if bc["id"] in DIAG.setdefault("fb_done", set()):
+                    return "wait"
+                DIAG["fb_done"].add(bc["id"])
                 call("POST", "liveBroadcasts/transition", {"broadcastStatus": "testing", "id": bc["id"], "part": "status"}, {})
                 call("POST", "liveBroadcasts/transition", {"broadcastStatus": "live", "id": bc["id"], "part": "status"}, {})
                 DIAG["yt"]["transition"] += " | fallback via testing OK"
@@ -633,7 +637,7 @@ class Relay:
     def caption_tick(self, now, _set=None):
         """Retry every ~25s (max 12x) until our broadcast is active, then set title/description once."""
         r = self.st.get("relay")
-        if not r or r.get("caption_done") or now - r.get("caption_try", 0) < (25 if r.get("caption_n", 0) < 12 else 60):
+        if not r or r.get("caption_done") or now - r.get("caption_try", 0) < (25 if r.get("caption_n", 0) < 12 else 600):
             return
         r["caption_try"] = now
         r["caption_n"] = r.get("caption_n", 0) + 1
@@ -675,7 +679,12 @@ class Relay:
                 return
         if minutes_today(self.st, now) >= cap:
             return
-        if getattr(self, "manual", False):                # manual mode: only the dashboard "Mirror ab" button starts a relay
+        if getattr(self, "manual", False):                # manual mode: only the dashboard "Mirror ab" starts a relay ...
+            h = (self.st.get("history") or [None])[0]     # ... except resuming a match cut by the 6h job chain
+            if h and h.get("note") == "job chained" and now - (h.get("ended") or 0) < 300:
+                c = next((x for x in live if x["video_id"] == h.get("video_id")), None)
+                if c:
+                    self.start(c)
             return
         for c in live:
             if not self._blocked(c["video_id"], now):
