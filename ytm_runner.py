@@ -389,8 +389,8 @@ def probe(url):
 
 
 def _tag_geom():
-    cx, cy = (os.environ.get("YTM_TAG_POS", "636:577").split(":") + ["577"])[:2]
-    bw, bh = (os.environ.get("YTM_TAG_BOX", "140:38").split(":") + ["38"])[:2]
+    cx, cy = (os.environ.get("YTM_TAG_POS", "646:588").split(":") + ["588"])[:2]
+    bw, bh = (os.environ.get("YTM_TAG_BOX", "250:64").split(":") + ["64"])[:2]
     return int(cx), int(cy), int(bw), int(bh)
 
 
@@ -448,15 +448,15 @@ def ffmpeg_cmd(hls, rtmp, strip=True):
     # YTM_TAG="" / "off" -> strip off and the mark is delogo-smeared instead. YTM_TAG_POS="cx:cy", YTM_TAG_BOX="w:h" (1280x720 frame).
     tag = os.environ.get("YTM_TAG", "LML").strip() if strip else "off"
     font = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-    cx, cy = (os.environ.get("YTM_TAG_POS", "636:577").split(":") + ["577"])[:2]
-    bw, bh = (os.environ.get("YTM_TAG_BOX", "140:38").split(":") + ["38"])[:2]
+    cx, cy = (os.environ.get("YTM_TAG_POS", "646:588").split(":") + ["588"])[:2]
+    bw, bh = (os.environ.get("YTM_TAG_BOX", "250:64").split(":") + ["64"])[:2]
     if tag and tag.lower() != "off" and os.path.isfile(font) and re.fullmatch(r"[A-Za-z0-9 @._-]{1,24}", tag) \
             and all(re.fullmatch(r"\d{1,4}", v) for v in (cx, cy, bw, bh)):
-        chain += (",drawbox=x=%s-%s/2:y=%s-%s/2:w=%s:h=%s:color=0x0b3d91@0.92:t=fill"
+        chain += (",drawbox=x=%s-%s/2:y=%s-%s/2:w=%s:h=%s:color=0x0b3d91:t=fill"
                   ",drawtext=fontfile=%s:text='%s':fontcolor=white:fontsize=28:x=%s-text_w/2:y=%s-text_h/2:"
                   "shadowcolor=black@0.6:shadowx=2:shadowy=2" % (cx, bw, cy, bh, bw, bh, font, tag, cx, cy))
     elif strip and boxes.lower() != "off":
-        chain += ",delogo=x=562:y=558:w=148:h=40"
+        chain += ",delogo=x=521:y=556:w=250:h=64"
     fc = chain + "[bg];[1:v]scale=%s:-1[lg];[bg][lg]overlay=%s,split=2[v][s];[s]fps=1/20,scale=640:-1[snap]" % (lw, pos)
     return (base + ["-i", logo, "-filter_complex", fc, "-map", "[v]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", os.environ.get("YTM_PRESET", "veryfast"), "-profile:v", "high", "-crf", "20", "-maxrate", "6000k", "-bufsize", "12000k",
