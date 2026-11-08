@@ -563,7 +563,7 @@ class Relay:
         r = dict(self.st.get("relay") or {})
         now = time.time()
         self._finish(outcome, note)
-        for c in self._pick_alt(r, now):
+        for c in ([] if getattr(self, "manual", False) else self._pick_alt(r, now)):
             self.start(c)
             if self.st.get("relay"):
                 self.st["relay"]["failover_from"] = r.get("video_id")
@@ -675,6 +675,8 @@ class Relay:
                 return
         if minutes_today(self.st, now) >= cap:
             return
+        if getattr(self, "manual", False):                # manual mode: only the dashboard "Mirror ab" button starts a relay
+            return
         for c in live:
             if not self._blocked(c["video_id"], now):
                 self.start(c)
@@ -748,6 +750,8 @@ def run(_sleep=time.sleep, _read=None, _write=None, _relay_factory=None, _detect
                 relay.stop("stopped", "mirror off")
                 break
             st["poll_secs"] = int(cfg.get("poll_secs", 60))
+            relay.manual = (cfg.get("mode") == "manual")
+            st["mode"] = "manual" if relay.manual else "auto"
             apply_commands(cfg, st, relay, live, now)
         if now - last_detect >= cfg_poll(st):                 # YouTube detection: every poll_secs
             last_detect = now
