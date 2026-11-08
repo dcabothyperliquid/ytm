@@ -457,7 +457,7 @@ class Relay:
         self._elog = open("/tmp/ffmpeg.log", "wb")
         self._last_t, self._last_t_at = None, time.time()
         strip = True
-        if os.environ.get("YTM_MARK_DETECT", "on").lower() != "off":
+        if os.environ.get("YTM_MARK_DETECT", "off").lower() != "off":
             r = mark_present(hls)
             strip = True if r is None else r
             self.st["mark_probe"] = {"watermark": r, "strip": strip, "at": int(time.time())}
