@@ -450,7 +450,12 @@ def ffmpeg_cmd(hls, rtmp, strip=True):
     font = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     cx, cy = (os.environ.get("YTM_TAG_POS", "646:588").split(":") + ["588"])[:2]
     bw, bh = (os.environ.get("YTM_TAG_BOX", "250:64").split(":") + ["64"])[:2]
-    if tag and tag.lower() != "off" and os.path.isfile(font) and re.fullmatch(r"[A-Za-z0-9 @._-]{1,24}", tag) \
+    tagimg = os.environ.get("YTM_TAG_IMG", "lml_tag.png").strip()
+    use_img = bool(strip and tagimg and tagimg.lower() != "off" and os.path.isfile(tagimg)
+                   and all(re.fullmatch(r"\d{1,4}", v) for v in (cx, cy, bw, bh)))
+    if use_img:                                                   # branded tag PNG (opaque, hides the source watermark)
+        chain += "[b0];[2:v]scale=%s:%s,format=rgba[tg];[b0][tg]overlay=%d:%d" % (bw, bh, int(cx) - int(bw) // 2, int(cy) - int(bh) // 2)
+    elif tag and tag.lower() != "off" and os.path.isfile(font) and re.fullmatch(r"[A-Za-z0-9 @._-]{1,24}", tag) \
             and all(re.fullmatch(r"\d{1,4}", v) for v in (cx, cy, bw, bh)):
         chain += (",drawbox=x=%s-%s/2:y=%s-%s/2:w=%s:h=%s:color=0x0b3d91:t=fill"
                   ",drawtext=fontfile=%s:text='%s':fontcolor=white:fontsize=28:x=%s-text_w/2:y=%s-text_h/2:"
@@ -458,7 +463,7 @@ def ffmpeg_cmd(hls, rtmp, strip=True):
     elif strip and boxes.lower() != "off":
         chain += ",delogo=x=521:y=556:w=250:h=64"
     fc = chain + "[bg];[1:v]scale=%s:-1[lg];[bg][lg]overlay=%s,split=2[v][s];[s]fps=1/20,scale=640:-1[snap]" % (lw, pos)
-    return (base + ["-i", logo, "-filter_complex", fc, "-map", "[v]", "-map", "0:a?",
+    return (base + ["-i", logo] + (["-i", tagimg] if use_img else []) + ["-filter_complex", fc, "-map", "[v]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", os.environ.get("YTM_PRESET", "veryfast"), "-profile:v", "high", "-crf", "20", "-maxrate", "6000k", "-bufsize", "12000k",
             "-g", "60", "-pix_fmt", "yuv420p", "-c:a", "copy", "-f", "flv", rtmp,
             "-map", "[snap]", "-q:v", "5", "-f", "image2", "-update", "1", "-y", "/tmp/ytm_frame.jpg"])
