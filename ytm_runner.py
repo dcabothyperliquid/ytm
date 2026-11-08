@@ -372,7 +372,44 @@ def probe(url):
     return bool(info.get("is_live")), (best or {}).get("url")
 
 
-def ffmpeg_cmd(hls, rtmp):
+def _tag_geom():
+    cx, cy = (os.environ.get("YTM_TAG_POS", "636:577").split(":") + ["577"])[:2]
+    bw, bh = (os.environ.get("YTM_TAG_BOX", "140:38").split(":") + ["38"])[:2]
+    return int(cx), int(cy), int(bw), int(bh)
+
+
+def mark_present(hls):
+    """Is a static watermark sitting where our LML strip goes? Grabs 4 frames (2 s apart) of that spot from the source:
+    a watermark = high contrast (text) that stays the same between frames. Plain ground / moving players / camera pans
+    do not qualify. True/False, or None when the probe failed (caller then keeps the strip = old behaviour).
+    Tunables: YTM_MARK_STD (min contrast, default 12), YTM_MARK_DIFF (max frame-to-frame change, default 4)."""
+    try:
+        cx, cy, bw, bh = _tag_geom()
+        x, y = cx - bw // 2, cy - bh // 2
+        vf = ("fps=0.5,scale=1280:720:flags=bilinear:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,"
+              "crop=%d:%d:%d:%d,format=gray" % (bw, bh, x, y))
+        p = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", hls, "-an", "-vf", vf,
+                            "-frames:v", "4", "-f", "rawvideo", "-"], capture_output=True, timeout=45)
+        n = bw * bh
+        frames = [p.stdout[i * n:(i + 1) * n] for i in range(len(p.stdout) // n)]
+        if len(frames) < 3:
+            log("mark probe: only %d frame(s) -> keeping strip" % len(frames))
+            return None
+        stds = []
+        for f in frames:
+            m = sum(f) / n
+            stds.append((sum((v - m) ** 2 for v in f) / n) ** 0.5)
+        diffs = [sum(abs(a - b) for a, b in zip(frames[i], frames[i + 1])) / n for i in range(len(frames) - 1)]
+        std, diff = sum(stds) / len(stds), max(diffs)
+        ok = std >= float(os.environ.get("YTM_MARK_STD", "12")) and diff <= float(os.environ.get("YTM_MARK_DIFF", "4"))
+        log("mark probe: contrast=%.1f change=%.1f -> %s" % (std, diff, "watermark -> LML strip" if ok else "no watermark -> no strip"))
+        return ok
+    except Exception as e:
+        log("mark probe failed (%s) -> keeping strip" % str(e)[:80])
+        return None
+
+
+def ffmpeg_cmd(hls, rtmp, strip=True):
     base = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-stats", "-reconnect", "1", "-reconnect_streamed", "1",
             "-reconnect_delay_max", "5", "-fflags", "+genpts", "-i", hls]
     logo = os.environ.get("YTM_LOGO", "logo.png")
@@ -393,7 +430,7 @@ def ffmpeg_cmd(hls, rtmp):
                 chain += ",delogo=x=%s:y=%s:w=%s:h=%s" % tuple(bx.split(":"))
     # centre-bottom "ACL" mark (permission-holder OK'd removal): covered by a solid branded strip with our tag (no blur smear).
     # YTM_TAG="" / "off" -> strip off and the mark is delogo-smeared instead. YTM_TAG_POS="cx:cy", YTM_TAG_BOX="w:h" (1280x720 frame).
-    tag = os.environ.get("YTM_TAG", "LML").strip()
+    tag = os.environ.get("YTM_TAG", "LML").strip() if strip else "off"
     font = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     cx, cy = (os.environ.get("YTM_TAG_POS", "636:577").split(":") + ["577"])[:2]
     bw, bh = (os.environ.get("YTM_TAG_BOX", "140:38").split(":") + ["38"])[:2]
@@ -402,7 +439,7 @@ def ffmpeg_cmd(hls, rtmp):
         chain += (",drawbox=x=%s-%s/2:y=%s-%s/2:w=%s:h=%s:color=0x0b3d91@0.92:t=fill"
                   ",drawtext=fontfile=%s:text='%s':fontcolor=white:fontsize=28:x=%s-text_w/2:y=%s-text_h/2:"
                   "shadowcolor=black@0.6:shadowx=2:shadowy=2" % (cx, bw, cy, bh, bw, bh, font, tag, cx, cy))
-    elif boxes.lower() != "off":
+    elif strip and boxes.lower() != "off":
         chain += ",delogo=x=562:y=558:w=148:h=40"
     fc = chain + "[bg];[1:v]scale=%s:-1[lg];[bg][lg]overlay=%s,split=2[v][s];[s]fps=1/20,scale=640:-1[snap]" % (lw, pos)
     return (base + ["-i", logo, "-filter_complex", fc, "-map", "[v]", "-map", "0:a?",
@@ -419,7 +456,12 @@ class Relay:
     def _spawn(self, hls):
         self._elog = open("/tmp/ffmpeg.log", "wb")
         self._last_t, self._last_t_at = None, time.time()
-        return self._popen(ffmpeg_cmd(hls, self.rtmp), stderr=self._elog)
+        strip = True
+        if os.environ.get("YTM_MARK_DETECT", "on").lower() != "off":
+            r = mark_present(hls)
+            strip = True if r is None else r
+            self.st["mark_probe"] = {"watermark": r, "strip": strip, "at": int(time.time())}
+        return self._popen(ffmpeg_cmd(hls, self.rtmp, strip), stderr=self._elog)
 
     def _tail(self):
         """last ffmpeg output (stream key masked) -> state, so it is visible without Actions logs"""
