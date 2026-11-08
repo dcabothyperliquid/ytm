@@ -289,10 +289,22 @@ def _ensure_broadcast(call, src_title, channel):
             log("broadcast created: " + title)
             DIAG["yt"]["created"] = title
         call("POST", "liveBroadcasts/bind", {"id": bc["id"], "part": "id,contentDetails", "streamId": st["id"]}, {})
+        def _err(e):
+            try:
+                return "%s %s" % (e, e.read().decode("utf8", "ignore")[:300])
+            except Exception:
+                return str(e)[:300]
         try:
             call("POST", "liveBroadcasts/transition", {"broadcastStatus": "live", "id": bc["id"], "part": "status"}, {})
         except Exception as e:
-            DIAG["yt"]["transition"] = str(e)[:100]
+            DIAG["yt"]["transition"] = _err(e)          # full reason (invalidTransition etc.), not just "403"
+            log("transition live failed: " + DIAG["yt"]["transition"])
+            try:                                        # fallback: ready -> testing -> live
+                call("POST", "liveBroadcasts/transition", {"broadcastStatus": "testing", "id": bc["id"], "part": "status"}, {})
+                call("POST", "liveBroadcasts/transition", {"broadcastStatus": "live", "id": bc["id"], "part": "status"}, {})
+                DIAG["yt"]["transition"] += " | fallback via testing OK"
+            except Exception as e2:
+                DIAG["yt"]["transition2"] = _err(e2)
     except Exception as e:
         DIAG["yt"] = "ensure error: %s" % str(e)[:200]
     return "wait"
@@ -621,7 +633,7 @@ class Relay:
     def caption_tick(self, now, _set=None):
         """Retry every ~25s (max 12x) until our broadcast is active, then set title/description once."""
         r = self.st.get("relay")
-        if not r or r.get("caption_done") or now - r.get("caption_try", 0) < 25:
+        if not r or r.get("caption_done") or now - r.get("caption_try", 0) < (25 if r.get("caption_n", 0) < 12 else 60):
             return
         r["caption_try"] = now
         r["caption_n"] = r.get("caption_n", 0) + 1
@@ -630,7 +642,7 @@ class Relay:
         except Exception as e:
             log("caption error: %s" % str(e)[:120])
             res = "wait"
-        if res in ("done", "skip") or r["caption_n"] >= 12:
+        if res in ("done", "skip"):                     # never give up while broadcast is not live (retry slower after 12)
             r["caption_done"] = True
 
     def stop(self, outcome="stopped", note="manual"):
