@@ -383,7 +383,7 @@ def ffmpeg_cmd(hls, rtmp):
     # YTM_LOGO_POS = overlay expr (default top-right), YTM_LOGO_W = logo width px (default 150).
     boxes = os.environ.get("YTM_DELOGO", "").strip()
     if not boxes:
-        boxes = "1030:10:240:60;1090:10:180:190;560:545:150:60"   # top-right source logo + centre-bottom "ACL" mark (permission-holder OK'd removal); rest of frame untouched
+        boxes = "1030:10:240:60;1090:10:180:190"   # only the top-right source logo (rest of the frame stays untouched = best quality)
     pos = os.environ.get("YTM_LOGO_POS", "W-w-20:20")
     lw = os.environ.get("YTM_LOGO_W", "170")
     chain = "[0:v]fps=30,scale=1280:720:flags=lanczos:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1"
@@ -391,13 +391,19 @@ def ffmpeg_cmd(hls, rtmp):
         for bx in boxes.split(";"):
             if bx.count(":") == 3:
                 chain += ",delogo=x=%s:y=%s:w=%s:h=%s" % tuple(bx.split(":"))
-    # own channel tag where the removed ACL mark was. YTM_TAG="" / "off" disables, YTM_TAG_POS="cx:y" (centre-x, top-y on the 1280x720 frame).
+    # centre-bottom "ACL" mark (permission-holder OK'd removal): covered by a solid branded strip with our tag (no blur smear).
+    # YTM_TAG="" / "off" -> strip off and the mark is delogo-smeared instead. YTM_TAG_POS="cx:cy", YTM_TAG_BOX="w:h" (1280x720 frame).
     tag = os.environ.get("YTM_TAG", "LML").strip()
     font = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-    if tag and tag.lower() != "off" and os.path.isfile(font) and re.fullmatch(r"[A-Za-z0-9 @._-]{1,24}", tag):
-        cx, ty = (os.environ.get("YTM_TAG_POS", "635:556").split(":") + ["556"])[:2]
-        chain += (",drawtext=fontfile=%s:text='%s':fontcolor=white@0.95:fontsize=34:x=%s-text_w/2:y=%s:"
-                  "box=1:boxcolor=0x0b3d91@0.55:boxborderw=8:shadowcolor=black@0.7:shadowx=2:shadowy=2" % (font, tag, cx, ty))
+    cx, cy = (os.environ.get("YTM_TAG_POS", "636:577").split(":") + ["577"])[:2]
+    bw, bh = (os.environ.get("YTM_TAG_BOX", "140:38").split(":") + ["38"])[:2]
+    if tag and tag.lower() != "off" and os.path.isfile(font) and re.fullmatch(r"[A-Za-z0-9 @._-]{1,24}", tag) \
+            and all(re.fullmatch(r"\d{1,4}", v) for v in (cx, cy, bw, bh)):
+        chain += (",drawbox=x=%s-%s/2:y=%s-%s/2:w=%s:h=%s:color=0x0b3d91@0.92:t=fill"
+                  ",drawtext=fontfile=%s:text='%s':fontcolor=white:fontsize=28:x=%s-text_w/2:y=%s-text_h/2:"
+                  "shadowcolor=black@0.6:shadowx=2:shadowy=2" % (cx, bw, cy, bh, bw, bh, font, tag, cx, cy))
+    elif boxes.lower() != "off":
+        chain += ",delogo=x=562:y=558:w=148:h=40"
     fc = chain + "[bg];[1:v]scale=%s:-1[lg];[bg][lg]overlay=%s,split=2[v][s];[s]fps=1/20,scale=640:-1[snap]" % (lw, pos)
     return (base + ["-i", logo, "-filter_complex", fc, "-map", "[v]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", os.environ.get("YTM_PRESET", "veryfast"), "-profile:v", "high", "-crf", "20", "-maxrate", "6000k", "-bufsize", "12000k",
