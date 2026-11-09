@@ -783,6 +783,26 @@ def apply_commands(cfg, st, relay, live, now):
 
 
 # ── entry points ─────────────────────────────────────────────────────────
+# ── self-chaining (GitHub cron is best-effort and can silently skip runs) ─
+WORKFLOW_FILE = "yt-mirror.yml"
+
+
+def ensure_next_queued():
+    """Keep one run waiting behind this one (concurrency group 'yt-mirror'), so the chain never
+    depends on the */15 cron firing. workflow_dispatch with GITHUB_TOKEN is allowed to trigger runs."""
+    try:
+        for stt in ("queued", "pending", "waiting"):
+            r = gh("GET", "actions/workflows/%s/runs?status=%s&per_page=5" % (WORKFLOW_FILE, stt))
+            if r.get("workflow_runs"):
+                return False                                   # something already waiting
+        gh("POST", "actions/workflows/%s/dispatches" % WORKFLOW_FILE, {"ref": "main"})
+        log("next run queued (self-chain)")
+        return True
+    except Exception as e:
+        log("self-chain failed: %s" % e)
+        return False
+
+
 def gate():
     out = "false"
     try:
@@ -800,7 +820,8 @@ def gate():
     return 0
 
 
-def run(_sleep=time.sleep, _read=None, _write=None, _relay_factory=None, _detector_factory=None, max_loops=None):
+def run(_sleep=time.sleep, _read=None, _write=None, _relay_factory=None, _detector_factory=None, max_loops=None, _chain=None):
+    _chain = bool(os.environ.get("GITHUB_ACTIONS")) if _chain is None else _chain
     _read, _write = _read or read_json, _write or write_json
     key = os.environ.get("YT_STREAM_KEY", "").strip()
     if not key:
@@ -819,10 +840,13 @@ def run(_sleep=time.sleep, _read=None, _write=None, _relay_factory=None, _detect
     relay = (_relay_factory or Relay)(st, os.environ.get("YT_RTMP_BASE", "rtmp://a.rtmp.youtube.com/live2").rstrip("/") + "/" + key)
     det = (_detector_factory or Detector)(st)
     deadline = time.time() + MAX_RUN_MIN * 60
-    last_cfg = last_detect = last_write = 0
+    last_cfg = last_detect = last_write = last_chain = 0
     last_sig, live, errors, cfg, loops = None, [], [], {}, 0
     while time.time() < deadline and not _stop["flag"]:
         now = time.time()
+        if _chain and now - last_chain >= 1800:               # keep a successor queued (cron may skip)
+            last_chain = now
+            ensure_next_queued()
         relay.poll()
         if hasattr(relay, "caption_tick"):
             relay.caption_tick(now)
