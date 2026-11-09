@@ -734,7 +734,10 @@ class Relay:
         fails = [x for x in h if x["video_id"] == vid and x["outcome"] == "failed"]
         if len(fails) >= MAX_ATTEMPTS or (fails and now - fails[0]["ended"] < RETRY_COOLDOWN):
             return True
-        return any(x["video_id"] == vid and x["outcome"] in ("ended", "stopped") for x in h[:10])
+        for x in h[:10]:                                  # newest entry for this video decides:
+            if x["video_id"] == vid and x["outcome"] in ("ended", "stopped", "interrupted"):
+                return x["outcome"] != "interrupted"      # job-chain interrupt = resume, even if an older manual stop exists
+        return False
 
     def step(self, live, cfg, now):
         self.live_last = live
