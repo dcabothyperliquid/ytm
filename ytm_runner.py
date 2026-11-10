@@ -11,6 +11,7 @@ Env: GITHUB_TOKEN, GITHUB_REPOSITORY (set by Actions), YOUTUBE_API_KEY, YT_STREA
 """
 import base64
 import json
+import math
 import os
 import re
 import signal
@@ -469,6 +470,9 @@ def mark_present(hls):
         return None
 
 
+LOGO_PROBE_VER = 2          # bump when sizing logic changes: cached per-match specs from older logic are re-probed
+
+
 def logo_probe(hls):
     """Find the SOURCE channel's static logo in the top-right of the frame and decide what OUR logo should look like.
     Grabs 5 frames (1.5 s apart) of the top-right region (1280x720 frame coords), keeps pixels that are sharp-edged AND
@@ -548,12 +552,16 @@ def logo_probe(hls):
         fill = len(best[1]) / float((max(xs) - min(xs) + 1) * (max(ys) - min(ys) + 1))
         bx, by, bw, bh = bx - CELL, max(0, by - CELL), bw + 2 * CELL, bh + 2 * CELL     # +1 cell margin: glyph-style logos are only partly caught
         cx, cy = bx + bw / 2.0, by + bh / 2.0
-        if bw / float(bh) >= 1.25:
-            shape, w = "rect", int(min(280, max(150, bw, bh * 2.5)))
+        if os.environ.get("YTM_LOGO_RECT", "off").lower() == "on" and bw / float(bh) >= 1.25:
+            shape, w = "rect", int(min(280, max(150, bw, bh * 2.5)))     # optional, off by default (was too big)
             h = int(w / 2.5)
         else:
-            shape = "circle"
-            w = int(min(170, max(90, max(bw, bh) * (1.25 if fill >= 0.92 else 1.0))))
+            shape = "circle"                              # always our round logo, sized so the circle covers the source box
+            if bw / float(bh) >= 1.25 or fill >= 0.92:
+                d = math.hypot(bw, bh)                    # wide / square source: circle through the box corners covers it all
+            else:
+                d = max(bw, bh) * 1.08 + 4                # round-ish source: small safety margin (no tiny edge peeking)
+            w = int(min(190, max(90, d)))
             h = w
         x = int(min(1280 - w - 8, max(8, cx - w / 2.0)))
         y = int(min(720 - h - 8, max(8, cy - h / 2.0)))
@@ -630,11 +638,11 @@ class Relay:
         if os.environ.get("YTM_LOGO_AUTO", "on").lower() != "off":
             vid = (self.st.get("relay") or {}).get("video_id") or getattr(self, "_cur_vid", None)
             lp = self.st.get("logo_probe") or {}
-            if vid and lp.get("video_id") == vid and "spec" in lp:     # same match, restart/chain -> reuse, no extra delay
+            if vid and lp.get("video_id") == vid and lp.get("ver") == LOGO_PROBE_VER and "spec" in lp:     # same match, restart/chain -> reuse, no extra delay
                 spec = lp["spec"]
             else:
                 spec = logo_probe(hls)
-                self.st["logo_probe"] = {"video_id": vid, "spec": spec, "at": int(time.time())}
+                self.st["logo_probe"] = {"video_id": vid, "spec": spec, "ver": LOGO_PROBE_VER, "at": int(time.time())}
         return self._popen(ffmpeg_cmd(hls, self.rtmp, strip, spec), stderr=self._elog)
 
     def _tail(self):
