@@ -469,10 +469,95 @@ def mark_present(hls):
         return None
 
 
-def ffmpeg_cmd(hls, rtmp, strip=True):
+def logo_probe(hls):
+    """Find the SOURCE channel's static logo in the top-right of the frame and decide what OUR logo should look like.
+    Grabs 5 frames (1.5 s apart) of the top-right region (1280x720 frame coords), keeps pixels that are sharp-edged AND
+    unchanged between frames (= a static overlay, not moving players), groups them into blobs and takes the biggest.
+    -> dict(shape='circle'|'rect', w=px, x=px, y=px)  or None (nothing reliable -> caller uses the default circle).
+    Wide blob (aspect >= 1.5) -> rectangular logo, otherwise circular. Size follows the blob, clamped.
+    Tunables: YTM_LOGO_EDGE (edge strength, 24), YTM_LOGO_STATIC (max change between frames, 12)."""
+    X0, Y0, CW, CH, CELL = 900, 0, 380, 200, 8
+    try:
+        vf = ("fps=0.67,scale=1280:720:flags=bilinear:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,"
+              "crop=%d:%d:%d:%d,format=gray" % (CW, CH, X0, Y0))
+        p = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", hls, "-an", "-vf", vf,
+                            "-frames:v", "5", "-f", "rawvideo", "-"], capture_output=True, timeout=45)
+        n = CW * CH
+        fr = [p.stdout[i * n:(i + 1) * n] for i in range(len(p.stdout) // n)]
+        if len(fr) < 4:
+            log("logo probe: only %d frame(s) -> default logo" % len(fr))
+            return None
+        k = len(fr)
+        mean = [sum(f[i] for f in fr) / k for i in range(n)]
+        edge_t = float(os.environ.get("YTM_LOGO_EDGE", "24"))
+        stat_t = float(os.environ.get("YTM_LOGO_STATIC", "12"))
+        gw, gh = CW // CELL, CH // CELL
+        cnt = [0] * (gw * gh)
+        for y in range(CH - 1):
+            row = y * CW
+            for x in range(CW - 1):
+                i = row + x
+                if abs(mean[i + 1] - mean[i]) + abs(mean[i + CW] - mean[i]) < edge_t:
+                    continue
+                if max(abs(f[i] - mean[i]) for f in fr) > stat_t:
+                    continue
+                cnt[(y // CELL) * gw + (x // CELL)] += 1
+        act = {c for c, v in enumerate(cnt) if v >= 8}
+        best, seen = None, set()
+        for c0 in act:                                   # 8-connected blobs of active cells
+            if c0 in seen:
+                continue
+            comp, stack = [], [c0]
+            seen.add(c0)
+            while stack:
+                c = stack.pop()
+                comp.append(c)
+                cx_, cy_ = c % gw, c // gw
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        nx, ny = cx_ + dx, cy_ + dy
+                        nc = ny * gw + nx
+                        if 0 <= nx < gw and 0 <= ny < gh and nc in act and nc not in seen:
+                            seen.add(nc)
+                            stack.append(nc)
+            tot = sum(cnt[c] for c in comp)
+            if best is None or tot > best[0]:
+                best = (tot, comp)
+        if not best or len(best[1]) < 6:
+            log("logo probe: no static logo found -> default logo")
+            return None
+        xs = [c % gw for c in best[1]]
+        ys = [c // gw for c in best[1]]
+        bx, by = X0 + min(xs) * CELL, Y0 + min(ys) * CELL
+        bw, bh = (max(xs) - min(xs) + 1) * CELL, (max(ys) - min(ys) + 1) * CELL
+        fill = len(best[1]) / float((max(xs) - min(xs) + 1) * (max(ys) - min(ys) + 1))
+        if bw > 340 or bh > 190 or bw < 32 or bh < 24:
+            log("logo probe: blob %dx%d unreliable (static background?) -> default logo" % (bw, bh))
+            return None
+        cx, cy = bx + bw / 2.0, by + bh / 2.0
+        if bw / float(bh) >= 1.5:
+            shape, w = "rect", int(min(280, max(150, bw * 1.12, bh * 1.12 * 2.5)))
+            h = int(w / 2.5)
+        else:
+            shape = "circle"
+            w = int(min(170, max(90, max(bw, bh) * (1.35 if fill >= 0.92 else 1.15))))
+            h = w
+        x = int(min(1280 - w - 8, max(8, cx - w / 2.0)))
+        y = int(min(720 - h - 8, max(8, cy - h / 2.0)))
+        spec = {"shape": shape, "w": w, "x": x, "y": y}
+        log("logo probe: source logo %dx%d @%d,%d fill=%.2f -> our %s logo %dpx @%d,%d" % (bw, bh, bx, by, fill, shape, w, x, y))
+        return spec
+    except Exception as e:
+        log("logo probe failed (%s) -> default logo" % str(e)[:80])
+        return None
+
+
+def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
     base = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-stats", "-reconnect", "1", "-reconnect_streamed", "1",
             "-reconnect_delay_max", "5", "-fflags", "+genpts", "-i", hls]
     logo = os.environ.get("YTM_LOGO", "logo.png")
+    if logo_spec and logo_spec.get("shape") == "rect" and os.path.isfile("logo_rect.png"):
+        logo = "logo_rect.png"
     if not os.path.isfile(logo):
         return base + ["-c", "copy", "-f", "flv", rtmp]          # no logo file -> old behaviour (stream copy)
     # logo mode: re-encode. Frame is forced to 1280x720, source-channel logo corners are smeared (delogo),
@@ -506,6 +591,8 @@ def ffmpeg_cmd(hls, rtmp, strip=True):
                   "shadowcolor=black@0.6:shadowx=2:shadowy=2" % (cx, bw, cy, bh, bw, bh, font, tag, cx, cy))
     elif strip and boxes.lower() != "off":
         chain += ",delogo=x=521:y=556:w=250:h=64"
+    if logo_spec:                                                 # auto-sized to the detected source logo
+        lw, pos = str(int(logo_spec["w"])), "%d:%d" % (int(logo_spec["x"]), int(logo_spec["y"]))
     fc = chain + "[bg];[1:v]scale=%s:-1[lg];[bg][lg]overlay=%s,split=2[v][s];[s]fps=1/20,scale=640:-1[snap]" % (lw, pos)
     return (base + ["-i", logo] + (["-i", tagimg] if use_img else []) + ["-filter_complex", fc, "-map", "[v]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", os.environ.get("YTM_PRESET", "veryfast"), "-profile:v", "high", "-crf", "20", "-maxrate", "6000k", "-bufsize", "12000k",
@@ -526,7 +613,16 @@ class Relay:
             r = mark_present(hls)
             strip = True if r is None else r
             self.st["mark_probe"] = {"watermark": r, "strip": strip, "at": int(time.time())}
-        return self._popen(ffmpeg_cmd(hls, self.rtmp, strip), stderr=self._elog)
+        spec = None
+        if os.environ.get("YTM_LOGO_AUTO", "on").lower() != "off":
+            vid = (self.st.get("relay") or {}).get("video_id")
+            lp = self.st.get("logo_probe") or {}
+            if vid and lp.get("video_id") == vid and "spec" in lp:     # same match, restart/chain -> reuse, no extra delay
+                spec = lp["spec"]
+            else:
+                spec = logo_probe(hls)
+                self.st["logo_probe"] = {"video_id": vid, "spec": spec, "at": int(time.time())}
+        return self._popen(ffmpeg_cmd(hls, self.rtmp, strip, spec), stderr=self._elog)
 
     def _tail(self):
         """last ffmpeg output (stream key masked) -> state, so it is visible without Actions logs"""
