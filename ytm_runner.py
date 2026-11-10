@@ -480,9 +480,9 @@ def ffmpeg_cmd(hls, rtmp, strip=True):
     # YTM_LOGO_POS = overlay expr (default top-right), YTM_LOGO_W = logo width px (default 150).
     boxes = os.environ.get("YTM_DELOGO", "").strip()
     if not boxes:
-        boxes = "1030:10:240:60;1090:10:180:190"   # only the top-right source logo (rest of the frame stays untouched = best quality)
-    pos = os.environ.get("YTM_LOGO_POS", "W-w-20:20")
-    lw = os.environ.get("YTM_LOGO_W", "170")
+        boxes = "off"   # no smear box by default: it showed as an ugly blur patch beside our logo. Override e.g. YTM_DELOGO="1090:10:180:190" if a source logo peeks out.
+    pos = os.environ.get("YTM_LOGO_POS", "W-w-18:16")
+    lw = os.environ.get("YTM_LOGO_W", "120")
     chain = "[0:v]fps=30,scale=1280:720:flags=lanczos:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1"
     if boxes.lower() != "off":
         for bx in boxes.split(";"):
