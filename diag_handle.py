@@ -39,6 +39,15 @@ if cid:
     except Exception as e:
         out["uploads_ids"], out["uploads_error"] = [], str(e)[:200]
     try:
+        h = get("https://www.youtube.com/channel/%s/live" % cid)
+        import re as _re
+        m = _re.search(r'<link rel="canonical" href="([^"]+)"', h)
+        out["live_page"] = {"len": len(h), "canonical": m.group(1) if m else None, "consent": "consent.youtube" in h or "CONSENT" in h[:3000],
+                            "isLiveNow": '"isLiveNow":true' in h, "videoIds": list(dict.fromkeys(_re.findall(r'"videoId":"([\\w-]{11})"', h)))[:6],
+                            "title": (_re.search(r"<title>(.*?)</title>", h) or [None, None])[1]}
+    except Exception as e:
+        out["live_page_error"] = str(e)[:200]
+    try:
         s = api("search", part="snippet", channelId=cid, eventType="live", type="video", maxResults=5)
         out["search_live"] = [(i["id"]["videoId"], i["snippet"]["title"][:80]) for i in s.get("items", [])]
     except Exception as e:
