@@ -638,7 +638,8 @@ class Relay:
         if os.environ.get("YTM_LOGO_AUTO", "on").lower() != "off":
             vid = (self.st.get("relay") or {}).get("video_id") or getattr(self, "_cur_vid", None)
             lp = self.st.get("logo_probe") or {}
-            if vid and lp.get("video_id") == vid and lp.get("ver") == LOGO_PROBE_VER and "spec" in lp:     # same match, restart/chain -> reuse, no extra delay
+            if vid and lp.get("video_id") == vid and lp.get("ver") == LOGO_PROBE_VER and "spec" in lp \
+                    and (lp["spec"] or time.time() - lp.get("at", 0) < 600):   # a failed/empty probe is retried after 10 min     # same match, restart/chain -> reuse, no extra delay
                 spec = lp["spec"]
             else:
                 spec = logo_probe(hls)
