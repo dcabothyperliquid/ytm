@@ -470,7 +470,7 @@ def mark_present(hls):
         return None
 
 
-LOGO_PROBE_VER = 2          # bump when sizing logic changes: cached per-match specs from older logic are re-probed
+LOGO_PROBE_VER = 3          # bump when sizing logic changes: cached per-match specs from older logic are re-probed
 
 
 def logo_probe(hls):
@@ -479,9 +479,9 @@ def logo_probe(hls):
     unchanged between frames (= a static overlay, not moving players), groups them into blobs and takes the biggest.
     A locked camera also has static background edges, so it tries strict levels first (only very sharp / dense edges =
     a logo) and relaxes step by step; a blob that touches the left/bottom border of the region is background, not a logo.
-    -> dict(shape='circle'|'rect', w=px, x=px, y=px)  or None (nothing reliable -> caller uses the default circle).
-    Wide blob (aspect >= 1.5) -> rectangular logo, otherwise circular. Size follows the blob, clamped.
-    Tunables: YTM_LOGO_STATIC (max change between frames, 12)."""
+    -> dict(shape='circle', w=px, x=px, y=px)  or None (nothing reliable -> caller uses the default circle).
+    Our logo is ALWAYS the circular one; its size follows the blob so the circle fully covers it (clamped to YTM_LOGO_MAX).
+    Tunables: YTM_LOGO_STATIC (max change between frames, 12), YTM_LOGO_MAX (max circle px, 260)."""
     X0, Y0, CW, CH, CELL = 904, 0, 376, 200, 8
     gw, gh = CW // CELL, CH // CELL
     try:
@@ -552,17 +552,13 @@ def logo_probe(hls):
         fill = len(best[1]) / float((max(xs) - min(xs) + 1) * (max(ys) - min(ys) + 1))
         bx, by, bw, bh = bx - CELL, max(0, by - CELL), bw + 2 * CELL, bh + 2 * CELL     # +1 cell margin: glyph-style logos are only partly caught
         cx, cy = bx + bw / 2.0, by + bh / 2.0
-        if os.environ.get("YTM_LOGO_RECT", "off").lower() == "on" and bw / float(bh) >= 1.25:
-            shape, w = "rect", int(min(280, max(150, bw, bh * 2.5)))     # optional, off by default (was too big)
-            h = int(w / 2.5)
+        shape = "circle"                                  # always our round logo, sized so the circle covers the source box
+        if bw / float(bh) >= 1.25 or fill >= 0.92:
+            d = math.hypot(bw, bh)                        # wide / square source: circle through the box corners covers it all
         else:
-            shape = "circle"                              # always our round logo, sized so the circle covers the source box
-            if bw / float(bh) >= 1.25 or fill >= 0.92:
-                d = math.hypot(bw, bh)                    # wide / square source: circle through the box corners covers it all
-            else:
-                d = max(bw, bh) * 1.08 + 4                # round-ish source: small safety margin (no tiny edge peeking)
-            w = int(min(190, max(90, d)))
-            h = w
+            d = max(bw, bh) * 1.08 + 4                    # round-ish source: small safety margin (no tiny edge peeking)
+        w = int(min(float(os.environ.get("YTM_LOGO_MAX", "260")), max(90, d)))
+        h = w
         x = int(min(1280 - w - 8, max(8, cx - w / 2.0)))
         y = int(min(720 - h - 8, max(8, cy - h / 2.0)))
         spec = {"shape": shape, "w": w, "x": x, "y": y}
@@ -577,8 +573,6 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
     base = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-stats", "-reconnect", "1", "-reconnect_streamed", "1",
             "-reconnect_delay_max", "5", "-fflags", "+genpts", "-i", hls]
     logo = os.environ.get("YTM_LOGO", "logo.png")
-    if logo_spec and logo_spec.get("shape") == "rect" and os.path.isfile("logo_rect.png"):
-        logo = "logo_rect.png"
     if not os.path.isfile(logo):
         return base + ["-c", "copy", "-f", "flv", rtmp]          # no logo file -> old behaviour (stream copy)
     # logo mode: re-encode. Frame is forced to 1280x720, source-channel logo corners are smeared (delogo),
