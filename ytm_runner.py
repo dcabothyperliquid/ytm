@@ -159,17 +159,24 @@ class Detector:
         d = self._api("playlistItems", {"part": "contentDetails", "maxResults": limit, "playlistId": "UU" + cid[2:]})
         return [i["contentDetails"]["videoId"] for i in d.get("items", [])]
 
-    def page_live_id(self, cid):
-        """Video id of the channel's current live stream via its public /live page (no API quota).
-        YouTube sometimes leaves a running live out of both RSS and the uploads playlist; this catches it.
-        Result is only a candidate: live() still verifies it through videos.list."""
+    def streams_live_ids(self, cid, ttl=240):
+        """Live video ids from the channel's /streams tab via yt-dlp (no API quota). YouTube sometimes leaves a
+        running live out of both RSS and the uploads playlist; this catches it. Candidates only: live() still
+        verifies them through videos.list. Cached per channel for `ttl` s (yt-dlp is slow)."""
+        cache = self.__dict__.setdefault("_sc", {})
+        now = time.time()
+        if cid in cache and now - cache[cid][0] < ttl:
+            return cache[cid][1]
+        ids = []
         try:
-            html = http("https://www.youtube.com/channel/%s/live" % cid).decode("utf8", "ignore")
-            m = re.search(r'<link rel="canonical" href="https://www\.youtube\.com/watch\?v=([\w-]{11})"', html)
-            return m.group(1) if m else None
+            r = subprocess.run(["yt-dlp", "--flat-playlist", "-J", "--playlist-end", "6",
+                                "https://www.youtube.com/channel/%s/streams" % cid],
+                               capture_output=True, text=True, timeout=60)
+            ids = [e["id"] for e in json.loads(r.stdout or "{}").get("entries", []) if e.get("live_status") == "is_live" and e.get("id")]
         except Exception as e:
-            log("live page fail %s: %s" % (cid, str(e)[:80]))
-            return None
+            log("streams tab fail %s: %s" % (cid, str(e)[:80]))
+        cache[cid] = (now, ids)
+        return ids
 
     def live(self, cfg):
         kws = [k.strip().lower() for k in (cfg.get("keywords") or "").split(",") if k.strip()]
@@ -178,9 +185,7 @@ class Detector:
             try:
                 cid = self.channel_id(c)
                 l = self.recent_ids(cid)
-                pid = self.page_live_id(cid)
-                if pid and pid not in l:
-                    l = l + [pid]
+                l = l + [v for v in self.streams_live_ids(cid) if v not in l]
                 per.append((c, cid, l))
             except Exception as e:
                 errs.append("%s: %s" % (c.get("name") or c["value"], str(e)[:80]))
