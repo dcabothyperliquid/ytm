@@ -48,6 +48,18 @@ if cid:
     except Exception as e:
         out["live_page_error"] = str(e)[:200]
     try:
+        import subprocess as _sp
+        r = _sp.run(["yt-dlp", "--flat-playlist", "-J", "--playlist-end", "6", "https://www.youtube.com/channel/%s/streams" % cid],
+                    capture_output=True, text=True, timeout=90)
+        try:
+            j = json.loads(r.stdout or "{}")
+            out["ytdlp_streams"] = [(e.get("id"), e.get("live_status"), (e.get("title") or "")[:50]) for e in j.get("entries", [])]
+        except Exception:
+            out["ytdlp_streams"] = None
+        out["ytdlp_rc"], out["ytdlp_err"] = r.returncode, (r.stderr or "")[-300:]
+    except Exception as e:
+        out["ytdlp_error"] = str(e)[:200]
+    try:
         s = api("search", part="snippet", channelId=cid, eventType="live", type="video", maxResults=5)
         out["search_live"] = [(i["id"]["videoId"], i["snippet"]["title"][:80]) for i in s.get("items", [])]
     except Exception as e:
