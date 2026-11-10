@@ -159,15 +159,35 @@ class Detector:
         d = self._api("playlistItems", {"part": "contentDetails", "maxResults": limit, "playlistId": "UU" + cid[2:]})
         return [i["contentDetails"]["videoId"] for i in d.get("items", [])]
 
+    def page_live_id(self, cid):
+        """Video id of the channel's current live stream via its public /live page (no API quota).
+        YouTube sometimes leaves a running live out of both RSS and the uploads playlist; this catches it.
+        Result is only a candidate: live() still verifies it through videos.list."""
+        try:
+            html = http("https://www.youtube.com/channel/%s/live" % cid).decode("utf8", "ignore")
+            m = re.search(r'<link rel="canonical" href="https://www\.youtube\.com/watch\?v=([\w-]{11})"', html)
+            return m.group(1) if m else None
+        except Exception as e:
+            log("live page fail %s: %s" % (cid, str(e)[:80]))
+            return None
+
     def live(self, cfg):
         kws = [k.strip().lower() for k in (cfg.get("keywords") or "").split(",") if k.strip()]
         per, errs = [], []
         for c in cfg.get("channels", []):
             try:
                 cid = self.channel_id(c)
-                per.append((c, cid, self.recent_ids(cid)))
+                l = self.recent_ids(cid)
+                pid = self.page_live_id(cid)
+                if pid and pid not in l:
+                    l = l + [pid]
+                per.append((c, cid, l))
             except Exception as e:
                 errs.append("%s: %s" % (c.get("name") or c["value"], str(e)[:80]))
+        rel = self.st.get("relay") or {}                  # always re-check the video we are relaying, even if feeds dropped it
+        if rel.get("video_id") and per and not any(rel["video_id"] in l for _, _, l in per):
+            tgt = next((x for x in per if (x[0].get("name") or x[0]["value"]) == rel.get("channel")), per[0])
+            tgt[2].append(rel["video_id"])
         ids = list(dict.fromkeys(v for _, _, l in per for v in l))
         info = {}
         for i in range(0, len(ids), 50):
@@ -852,7 +872,7 @@ class Relay:
             return True
         for x in h[:10]:                                  # newest entry for this video decides:
             if x["video_id"] == vid and x["outcome"] in ("ended", "stopped", "interrupted"):
-                return x["outcome"] != "interrupted"      # job-chain interrupt = resume, even if an older manual stop exists
+                return x["outcome"] == "stopped"          # only a manual/cap stop blocks; "ended"/"interrupted" may resume if the video is live again
         return False
 
     def step(self, live, cfg, now):
