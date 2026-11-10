@@ -473,10 +473,13 @@ def logo_probe(hls):
     """Find the SOURCE channel's static logo in the top-right of the frame and decide what OUR logo should look like.
     Grabs 5 frames (1.5 s apart) of the top-right region (1280x720 frame coords), keeps pixels that are sharp-edged AND
     unchanged between frames (= a static overlay, not moving players), groups them into blobs and takes the biggest.
+    A locked camera also has static background edges, so it tries strict levels first (only very sharp / dense edges =
+    a logo) and relaxes step by step; a blob that touches the left/bottom border of the region is background, not a logo.
     -> dict(shape='circle'|'rect', w=px, x=px, y=px)  or None (nothing reliable -> caller uses the default circle).
     Wide blob (aspect >= 1.5) -> rectangular logo, otherwise circular. Size follows the blob, clamped.
-    Tunables: YTM_LOGO_EDGE (edge strength, 24), YTM_LOGO_STATIC (max change between frames, 12)."""
-    X0, Y0, CW, CH, CELL = 900, 0, 380, 200, 8
+    Tunables: YTM_LOGO_STATIC (max change between frames, 12)."""
+    X0, Y0, CW, CH, CELL = 904, 0, 376, 200, 8
+    gw, gh = CW // CELL, CH // CELL
     try:
         vf = ("fps=0.67,scale=1280:720:flags=bilinear:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,"
               "crop=%d:%d:%d:%d,format=gray" % (CW, CH, X0, Y0))
@@ -489,58 +492,68 @@ def logo_probe(hls):
             return None
         k = len(fr)
         mean = [sum(f[i] for f in fr) / k for i in range(n)]
-        edge_t = float(os.environ.get("YTM_LOGO_EDGE", "24"))
         stat_t = float(os.environ.get("YTM_LOGO_STATIC", "12"))
-        gw, gh = CW // CELL, CH // CELL
-        cnt = [0] * (gw * gh)
+        es = [0.0] * n                                   # edge strength, only where the pixel is static
         for y in range(CH - 1):
             row = y * CW
             for x in range(CW - 1):
                 i = row + x
-                if abs(mean[i + 1] - mean[i]) + abs(mean[i + CW] - mean[i]) < edge_t:
+                e = abs(mean[i + 1] - mean[i]) + abs(mean[i + CW] - mean[i])
+                if e >= 24 and max(abs(f[i] - mean[i]) for f in fr) <= stat_t:
+                    es[i] = e
+
+        def blob(edge_t, min_cnt):
+            cnt = [0] * (gw * gh)
+            for i in range(n):
+                if es[i] >= edge_t:
+                    cnt[((i // CW) // CELL) * gw + min((i % CW) // CELL, gw - 1)] += 1
+            act = {c for c, v in enumerate(cnt) if v >= min_cnt}
+            best, seen = None, set()
+            for c0 in act:                               # 8-connected blobs of active cells
+                if c0 in seen:
                     continue
-                if max(abs(f[i] - mean[i]) for f in fr) > stat_t:
-                    continue
-                cnt[(y // CELL) * gw + (x // CELL)] += 1
-        act = {c for c, v in enumerate(cnt) if v >= 8}
-        best, seen = None, set()
-        for c0 in act:                                   # 8-connected blobs of active cells
-            if c0 in seen:
+                comp, stack = [], [c0]
+                seen.add(c0)
+                while stack:
+                    c = stack.pop()
+                    comp.append(c)
+                    for dx in (-1, 0, 1):
+                        for dy in (-1, 0, 1):
+                            nx, ny = c % gw + dx, c // gw + dy
+                            nc = ny * gw + nx
+                            if 0 <= nx < gw and 0 <= ny < gh and nc in act and nc not in seen:
+                                seen.add(nc)
+                                stack.append(nc)
+                tot = sum(cnt[c] for c in comp)
+                if len(comp) >= 6 and (best is None or tot > best[0]):
+                    best = (tot, comp)
+            return best
+
+        pick = None
+        for edge_t, min_cnt in ((90, 12), (60, 12), (40, 10), (24, 8)):
+            best = blob(edge_t, min_cnt)
+            if not best:
                 continue
-            comp, stack = [], [c0]
-            seen.add(c0)
-            while stack:
-                c = stack.pop()
-                comp.append(c)
-                cx_, cy_ = c % gw, c // gw
-                for dx in (-1, 0, 1):
-                    for dy in (-1, 0, 1):
-                        nx, ny = cx_ + dx, cy_ + dy
-                        nc = ny * gw + nx
-                        if 0 <= nx < gw and 0 <= ny < gh and nc in act and nc not in seen:
-                            seen.add(nc)
-                            stack.append(nc)
-            tot = sum(cnt[c] for c in comp)
-            if best is None or tot > best[0]:
-                best = (tot, comp)
-        if not best or len(best[1]) < 6:
-            log("logo probe: no static logo found -> default logo")
+            xs, ys = [c % gw for c in best[1]], [c // gw for c in best[1]]
+            bw, bh = (max(xs) - min(xs) + 1) * CELL, (max(ys) - min(ys) + 1) * CELL
+            if min(xs) == 0 or max(ys) == gh - 1 or bw > 340 or bh > 190 or bw < 32 or bh < 24:
+                continue                                 # touches the region border / absurd size = background, try next level
+            pick = (best, xs, ys, bw, bh)
+            break
+        if not pick:
+            log("logo probe: no reliable static logo -> default logo")
             return None
-        xs = [c % gw for c in best[1]]
-        ys = [c // gw for c in best[1]]
+        best, xs, ys, bw, bh = pick
         bx, by = X0 + min(xs) * CELL, Y0 + min(ys) * CELL
-        bw, bh = (max(xs) - min(xs) + 1) * CELL, (max(ys) - min(ys) + 1) * CELL
         fill = len(best[1]) / float((max(xs) - min(xs) + 1) * (max(ys) - min(ys) + 1))
-        if bw > 340 or bh > 190 or bw < 32 or bh < 24:
-            log("logo probe: blob %dx%d unreliable (static background?) -> default logo" % (bw, bh))
-            return None
+        bx, by, bw, bh = bx - CELL, max(0, by - CELL), bw + 2 * CELL, bh + 2 * CELL     # +1 cell margin: glyph-style logos are only partly caught
         cx, cy = bx + bw / 2.0, by + bh / 2.0
-        if bw / float(bh) >= 1.5:
-            shape, w = "rect", int(min(280, max(150, bw * 1.12, bh * 1.12 * 2.5)))
+        if bw / float(bh) >= 1.25:
+            shape, w = "rect", int(min(280, max(150, bw, bh * 2.5)))
             h = int(w / 2.5)
         else:
             shape = "circle"
-            w = int(min(170, max(90, max(bw, bh) * (1.35 if fill >= 0.92 else 1.15))))
+            w = int(min(170, max(90, max(bw, bh) * (1.25 if fill >= 0.92 else 1.0))))
             h = w
         x = int(min(1280 - w - 8, max(8, cx - w / 2.0)))
         y = int(min(720 - h - 8, max(8, cy - h / 2.0)))
@@ -615,7 +628,7 @@ class Relay:
             self.st["mark_probe"] = {"watermark": r, "strip": strip, "at": int(time.time())}
         spec = None
         if os.environ.get("YTM_LOGO_AUTO", "on").lower() != "off":
-            vid = (self.st.get("relay") or {}).get("video_id")
+            vid = (self.st.get("relay") or {}).get("video_id") or getattr(self, "_cur_vid", None)
             lp = self.st.get("logo_probe") or {}
             if vid and lp.get("video_id") == vid and "spec" in lp:     # same match, restart/chain -> reuse, no extra delay
                 spec = lp["spec"]
@@ -687,6 +700,7 @@ class Relay:
             prep = prepare_broadcast(c["title"], c["channel"])
         except Exception as e:
             log("prepare broadcast failed: %s" % str(e)[:120])
+        self._cur_vid = c["video_id"]
         self.proc = self._spawn(hls)
         self.st["relay"] = {"video_id": c["video_id"], "title": c["title"], "channel": c["channel"],
                             "url": c["url"], "started": int(time.time()), "not_live_since": None}
