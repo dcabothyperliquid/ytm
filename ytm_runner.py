@@ -470,7 +470,7 @@ def mark_present(hls):
         return None
 
 
-LOGO_PROBE_VER = 3          # bump when sizing logic changes: cached per-match specs from older logic are re-probed
+LOGO_PROBE_VER = 4          # bump when sizing logic changes: cached per-match specs from older logic are re-probed
 
 
 def logo_probe(hls):
@@ -559,8 +559,9 @@ def logo_probe(hls):
             d = max(bw, bh) * 1.08 + 4                    # round-ish source: small safety margin (no tiny edge peeking)
         w = int(min(float(os.environ.get("YTM_LOGO_MAX", "260")), max(90, d)))
         h = w
-        x = int(min(1280 - w - 8, max(8, cx - w / 2.0)))
-        y = int(min(720 - h - 8, max(8, cy - h / 2.0)))
+        bleed = int(w * 0.12)                             # a circle fully inside the frame can't cover a badge hugging the corner -> allow a small bleed past the edge
+        x = int(min(1280 - w + bleed, max(-bleed, cx - w / 2.0)))
+        y = int(min(720 - h + bleed, max(-bleed, cy - h / 2.0)))
         spec = {"shape": shape, "w": w, "x": x, "y": y}
         log("logo probe: source logo %dx%d @%d,%d fill=%.2f -> our %s logo %dpx @%d,%d" % (bw, bh, bx, by, fill, shape, w, x, y))
         return spec
@@ -581,8 +582,10 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
     boxes = os.environ.get("YTM_DELOGO", "").strip()
     if not boxes:
         boxes = "off"   # no smear box by default: it showed as an ugly blur patch beside our logo. Override e.g. YTM_DELOGO="1090:10:180:190" if a source logo peeks out.
-    pos = os.environ.get("YTM_LOGO_POS", "W-w-18:16")
-    lw = os.environ.get("YTM_LOGO_W", "120")
+    # fallback when the probe finds no static logo (animated / flipping source logos change every frame):
+    # big circle tucked into the top-right corner (slight bleed past the edge) so a corner badge stays hidden.
+    pos = os.environ.get("YTM_LOGO_POS", "W-w+10:-8")
+    lw = os.environ.get("YTM_LOGO_W", "170")
     chain = "[0:v]fps=30,scale=1280:720:flags=lanczos:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1"
     if boxes.lower() != "off":
         for bx in boxes.split(";"):
