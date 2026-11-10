@@ -178,6 +178,15 @@ class Detector:
         cache[cid] = (now, ids)
         return ids
 
+    def is_live(self, vid):
+        """True/False from videos.list for ONE id (1 unit); None if unknown (API error) -> caller must not stop."""
+        try:
+            it = (self._api("videos", {"part": "snippet", "id": vid}).get("items") or [None])[0]
+        except Exception as e:
+            log("verify fail %s: %s" % (vid, str(e)[:80]))
+            return None
+        return bool(it) and it["snippet"].get("liveBroadcastContent") == "live"
+
     def live(self, cfg):
         kws = [k.strip().lower() for k in (cfg.get("keywords") or "").split(",") if k.strip()]
         per, errs = [], []
@@ -890,8 +899,12 @@ class Relay:
             else:
                 r["not_live_since"] = r.get("not_live_since") or int(now)
                 if now - r["not_live_since"] > ENDED_GRACE:
-                    self._finish("ended", "not in live list")
-                    r = None
+                    v = getattr(self, "verify", None)
+                    if v and v(r["video_id"]) is not False:   # still live (or unknown/API error) -> keep relaying, re-check in ~60s
+                        r["not_live_since"] = int(now) - ENDED_GRACE + 60
+                    else:
+                        self._finish("ended", "not in live list")
+                        r = None
             if r and minutes_today(self.st, now) >= cap:
                 self._finish("stopped", "daily cap")
             if r:
@@ -1003,6 +1016,7 @@ def run(_sleep=time.sleep, _read=None, _write=None, _relay_factory=None, _detect
                 break
             st["poll_secs"] = int(cfg.get("poll_secs", 60))
             relay.manual = (cfg.get("mode") == "manual")
+            relay.verify = det.is_live
             st["mode"] = "manual" if relay.manual else "auto"
             apply_commands(cfg, st, relay, live, now)
         if now - last_detect >= cfg_poll(st):                 # YouTube detection: every poll_secs
