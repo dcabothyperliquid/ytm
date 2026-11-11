@@ -69,6 +69,7 @@ jobs:
         if: steps.gate.outputs.go == 'true'
         env:
           YTM_SLOT: "2"
+          YTM_LOGO_AUTO: "off"   # relay 2: always the default big corner circle (170px, top-right) that fully covers the source logo
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           YT_STREAM_KEY: ${{ secrets.YT_STREAM_KEY }}
