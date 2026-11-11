@@ -469,6 +469,9 @@ def set_caption(src_title, channel=""):
     items = call("GET", "liveBroadcasts", {"part": "snippet,status,contentDetails", "broadcastStatus": "active", "maxResults": 10}).get("items", [])
     if sid:
         items = [i for i in items if (i.get("contentDetails") or {}).get("boundStreamId") == sid]
+    ended = DIAG.setdefault("ended_ids", set())
+    items = [i for i in items if i["id"] not in ended
+             and (i.get("status") or {}).get("lifeCycleStatus") not in ("complete", "revoked")]   # dying broadcast of the previous relay
     if not items:
         return _ensure_broadcast(call, src_title, channel)
     it = items[0]
@@ -476,6 +479,8 @@ def set_caption(src_title, channel=""):
     sn = {"title": title, "description": desc, "scheduledStartTime": it["snippet"]["scheduledStartTime"]}
     call("PUT", "liveBroadcasts", {"part": "snippet"}, {"id": it["id"], "snippet": sn})
     log("caption set: " + title)
+    if (it.get("status") or {}).get("lifeCycleStatus") != "live":
+        return "wait"                                       # titled, but not LIVE yet: keep watching (watchdog re-kicks)
     return "done"
 
 
@@ -504,6 +509,7 @@ def end_broadcast():
         for it in items:
             try:
                 call("POST", "liveBroadcasts/transition", {"broadcastStatus": "complete", "id": it["id"], "part": "status"})
+                DIAG.setdefault("ended_ids", set()).add(it["id"])
                 n += 1
             except Exception as e:
                 log("end broadcast %s: %s" % (it["id"], str(e)[:100]))
@@ -909,7 +915,7 @@ class Relay:
     def caption_tick(self, now, _set=None):
         """Retry every ~25s (max 12x) until our broadcast is active, then set title/description once."""
         r = self.st.get("relay")
-        if not r or r.get("caption_done") or now - r.get("caption_try", 0) < (25 if r.get("caption_n", 0) < 12 else 600):
+        if not r or r.get("caption_done") or now - r.get("caption_try", 0) < (25 if (r.get("caption_n", 0) < 12 or r.get("kick_n", 0) < 6) else 600):
             return
         r["caption_try"] = now
         r["caption_n"] = r.get("caption_n", 0) + 1
@@ -918,9 +924,16 @@ class Relay:
         except Exception as e:
             log("caption error: %s" % str(e)[:120])
             res = "wait"
+        if res == "done":
+            r["yt_live"] = True                         # dashboard: really LIVE on YouTube
+        elif res == "wait":
+            yt0 = DIAG.get("yt")
+            if isinstance(yt0, dict) and any(b[1] in ("ready", "testing", "created") for b in yt0.get("broadcasts", [])):
+                r["yt_live"] = False                    # ffmpeg runs but YouTube broadcast is not live
         if res in ("done", "skip"):                     # never give up while broadcast is not live (retry slower after 12)
             r["caption_done"] = True
-        elif not r.get("kicked") and r["caption_n"] >= (2 if r.get("kick_early") else 4):
+        elif ((not r.get("kicked") and r["caption_n"] >= (2 if r.get("kick_early") else 4))
+              or (r.get("kicked") and now - r.get("kick_at", 0) > 240 and r.get("kick_n", 0) < 6)):
             yt = DIAG.get("yt")
             bcs = yt.get("broadcasts", []) if isinstance(yt, dict) else []
             if any(b[1] in ("ready", "testing") for b in bcs):   # still not live although a broadcast is waiting
@@ -930,6 +943,7 @@ class Relay:
         """Stuck on 'ready' (stream was flowing when the broadcast got bound): pause ingest so YouTube marks the stream idle,
         then the normal restart path reconnects = a fresh stream start, which fires the bound broadcast's auto-start."""
         r["kicked"] = True
+        r["kick_at"], r["kick_n"] = time.time(), r.get("kick_n", 0) + 1
         log("broadcast stuck on ready -> pausing ingest %ds to re-trigger auto-start" % KICK_DOWN_SECS)
         if self.proc is not None and self.proc.poll() is None:
             self.proc.terminate()
