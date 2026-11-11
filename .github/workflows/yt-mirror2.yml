@@ -1,0 +1,79 @@
+name: YT Live Mirror 2
+
+# Relay 2: a SECOND, manual-only relay on the same channel, started from the dashboard
+# ("Relay 2" button next to a live match). Own runner, own stream, own state (ytm_state2.json).
+# No cron: the dashboard dispatches it; it ends when the match ends or Stop is pressed.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: yt-mirror2
+  cancel-in-progress: true
+
+jobs:
+  mirror2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 358
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Gate (cheap)
+        id: gate
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python ytm_runner.py gate2
+
+      - name: Install ffmpeg + yt-dlp
+        if: steps.gate.outputs.go == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install -U "yt-dlp[default]"
+          node --version
+
+      - name: Cookies (optional)
+        if: steps.gate.outputs.go == 'true'
+        env:
+          YT_COOKIES: ${{ secrets.YT_COOKIES }}
+        run: |
+          if [ -n "$YT_COOKIES" ]; then
+            printf '%s\n' "$YT_COOKIES" > cookies_raw
+            python - <<'PY'
+          import json
+          raw = open("cookies_raw").read().strip()
+          if raw[:1] in "[{":
+              d = json.loads(raw)
+              d = d.get("cookies", d) if isinstance(d, dict) else d
+              out = ["# Netscape HTTP Cookie File"]
+              for c in d:
+                  dom = c.get("domain", "")
+                  exp = int(c.get("expirationDate") or c.get("expires") or 0)
+                  out.append("\t".join([dom, "TRUE" if dom.startswith(".") else "FALSE", c.get("path", "/"),
+                                        "TRUE" if c.get("secure") else "FALSE", str(max(exp, 0)), c["name"], c["value"]]))
+              raw = "\n".join(out)
+          open("cookies.txt", "w").write(raw + "\n")
+          PY
+            rm -f cookies_raw
+          fi
+
+      - name: Relay 2
+        if: steps.gate.outputs.go == 'true'
+        env:
+          YTM_SLOT: "2"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          YT_STREAM_KEY: ${{ secrets.YT_STREAM_KEY }}
+          YT_STREAM_KEY_2: ${{ secrets.YT_STREAM_KEY_2 }}
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+        run: python ytm_runner.py run2

@@ -26,6 +26,10 @@ import xml.etree.ElementTree as ET
 REPO = os.environ.get("GITHUB_REPOSITORY", "dcabothyperliquid/ytm")
 BRANCH = "ytm-data"
 CFG_PATH, ST_PATH = "ytm_config.json", "ytm_state.json"
+ST2_PATH = "ytm_state2.json"   # relay 2 (second parallel relay on the same channel, manual only)
+SLOT = os.environ.get("YTM_SLOT", "1")                       # "2" = relay-2 job: own stream key, own state, never touches relay 1's broadcast
+FRAME_FILE = "ytm_frame.jpg" if SLOT != "2" else "ytm_frame2.jpg"
+STREAM2_TITLE = "YTM Relay 2"
 MAX_RUN_MIN = int(os.environ.get("MAX_RUN_MIN", "350"))
 ENDED_GRACE = 90          # s the source may be missing from the live list before we stop
 RETRY_COOLDOWN = 120
@@ -298,16 +302,62 @@ def _oauth_token():
 DIAG = {}
 
 
+def _slot_key():
+    return os.environ.get("YT_STREAM_KEY_2" if SLOT == "2" else "YT_STREAM_KEY", "").strip()
+
+
+def _my_stream(items):
+    """The liveStream that carries THIS slot's key, so two relays on one channel never touch each other's broadcast.
+    None = not identifiable (relay 1 then falls back to the old single-stream behaviour; relay 2 refuses to guess)."""
+    key = _slot_key()
+    if not key:
+        return None
+    for i in items:
+        if ((i.get("cdn") or {}).get("ingestionInfo") or {}).get("streamName") == key:
+            return i
+    return None
+
+
+def _my_stream_id(call):
+    if DIAG.get("sid"):
+        return DIAG["sid"]
+    try:
+        ls = call("GET", "liveStreams", {"part": "snippet,status,cdn", "mine": "true", "maxResults": 50}).get("items", [])
+    except Exception as e:
+        log("my stream lookup: %s" % str(e)[:100])
+        return None
+    m = _my_stream(ls)
+    if m:
+        DIAG["sid"] = m["id"]
+    return DIAG.get("sid")
+
+
+def _mine_only(items, sid):
+    """keep only broadcasts bound to our stream (or not bound yet)"""
+    if not sid:
+        return items
+    return [i for i in items if (i.get("contentDetails") or {}).get("boundStreamId") in (None, sid)]
+
+
 def _ensure_broadcast(call, src_title, channel):
     """No ACTIVE broadcast on our channel: bind/create one (public, auto-start) so the incoming stream goes live.
     Returns 'wait'; the next caption tick finds the active broadcast and sets the caption."""
     try:
-        ls = call("GET", "liveStreams", {"part": "snippet,status", "mine": "true", "maxResults": 5}).get("items", [])
-        lb = call("GET", "liveBroadcasts", {"part": "snippet,status,contentDetails", "mine": "true", "maxResults": 10}).get("items", [])
+        ls = call("GET", "liveStreams", {"part": "snippet,status,cdn", "mine": "true", "maxResults": 50}).get("items", [])
+        lb = call("GET", "liveBroadcasts", {"part": "snippet,status,contentDetails", "mine": "true", "maxResults": 25}).get("items", [])
+        mine = _my_stream(ls)
+        if SLOT == "2" and not mine:
+            return "wait"                                   # never guess on relay 2: it could hijack relay 1's broadcast
+        if mine:
+            DIAG["sid"] = mine["id"]
+            lb = _mine_only(lb, mine["id"])
         DIAG["yt"] = {"streams": [(i["snippet"].get("title"), i["status"].get("streamStatus"),
                                    (i["status"].get("healthStatus") or {}).get("status")) for i in ls],
                       "broadcasts": [(i["snippet"].get("title", "")[:40], i["status"].get("lifeCycleStatus")) for i in lb]}
-        st = next((i for i in ls if i["status"].get("streamStatus") == "active"), None)
+        if mine:
+            st = mine if mine["status"].get("streamStatus") == "active" else None
+        else:
+            st = next((i for i in ls if i["status"].get("streamStatus") == "active"), None)
         if not st:
             return "wait"                                   # nothing arriving yet
         bc = next((i for i in lb if i["status"].get("lifeCycleStatus") in ("created", "ready", "testing", "liveStarting")), None)
@@ -354,11 +404,17 @@ def _prepare(call, src_title, channel):
     """Make sure a bound broadcast exists BEFORE ffmpeg starts sending: its enableAutoStart then fires on the fresh ingest.
     (Bound while the stream is already flowing, auto-start never fires and a manual transition gives invalidTransition.)
     Returns 'fresh' (stream idle, auto-start will fire), 'busy' (stream already active: may need a kick) or 'nostream'."""
-    ls = call("GET", "liveStreams", {"part": "snippet,status", "mine": "true", "maxResults": 5}).get("items", [])
+    ls = call("GET", "liveStreams", {"part": "snippet,status,cdn", "mine": "true", "maxResults": 50}).get("items", [])
     if not ls:
         return "nostream"
-    st = next((i for i in ls if i["status"].get("streamStatus") == "active"), ls[0])
-    lb = call("GET", "liveBroadcasts", {"part": "snippet,status,contentDetails", "mine": "true", "maxResults": 10}).get("items", [])
+    mine = _my_stream(ls)
+    if SLOT == "2" and not mine:
+        return "nostream"                                    # never guess on relay 2
+    st = mine or next((i for i in ls if i["status"].get("streamStatus") == "active"), ls[0])
+    if mine:
+        DIAG["sid"] = mine["id"]
+    lb = call("GET", "liveBroadcasts", {"part": "snippet,status,contentDetails", "mine": "true", "maxResults": 25}).get("items", [])
+    lb = _mine_only(lb, mine["id"] if mine else None)
     bc = next((i for i in lb if i["status"].get("lifeCycleStatus") in ("created", "ready", "testing", "liveStarting", "live")), None)
     changed = False
     if bc is None:
@@ -407,7 +463,12 @@ def set_caption(src_title, channel=""):
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.loads(r.read() or b"{}")
 
-    items = call("GET", "liveBroadcasts", {"part": "snippet,status", "broadcastStatus": "active", "maxResults": 5}).get("items", [])
+    sid = _my_stream_id(call)
+    if SLOT == "2" and not sid:
+        return "wait"
+    items = call("GET", "liveBroadcasts", {"part": "snippet,status,contentDetails", "broadcastStatus": "active", "maxResults": 10}).get("items", [])
+    if sid:
+        items = [i for i in items if (i.get("contentDetails") or {}).get("boundStreamId") == sid]
     if not items:
         return _ensure_broadcast(call, src_title, channel)
     it = items[0]
@@ -434,7 +495,12 @@ def end_broadcast():
 
     n = 0
     try:
-        items = call("GET", "liveBroadcasts", {"part": "id,status", "broadcastStatus": "active", "maxResults": 10}).get("items", [])
+        sid = _my_stream_id(call)
+        if SLOT == "2" and not sid:
+            return "skip"                                    # cannot tell which broadcast is ours: do not end relay 1's
+        items = call("GET", "liveBroadcasts", {"part": "id,status,contentDetails", "broadcastStatus": "active", "maxResults": 10}).get("items", [])
+        if sid:
+            items = [i for i in items if (i.get("contentDetails") or {}).get("boundStreamId") == sid]
         for it in items:
             try:
                 call("POST", "liveBroadcasts/transition", {"broadcastStatus": "complete", "id": it["id"], "part": "status"})
@@ -693,14 +759,14 @@ class Relay:
             try:
                 sha = None
                 try:
-                    sha = gh("GET", "contents/ytm_frame.jpg?ref=%s" % BRANCH).get("sha")
+                    sha = gh("GET", "contents/%s?ref=%s" % (FRAME_FILE, BRANCH)).get("sha")
                 except urllib.error.HTTPError:
                     pass
                 body = {"message": "frame", "branch": BRANCH,
                         "content": base64.b64encode(open("/tmp/ytm_frame.jpg", "rb").read()).decode()}
                 if sha:
                     body["sha"] = sha
-                gh("PUT", "contents/ytm_frame.jpg", body)
+                gh("PUT", "contents/" + FRAME_FILE, body)
             except Exception as e:
                 log("frame upload: %s" % str(e)[:80])
 
@@ -1024,7 +1090,8 @@ def run(_sleep=time.sleep, _read=None, _write=None, _relay_factory=None, _detect
             try:
                 live, errors = det.live(cfg)
                 st["last_check"] = int(now)
-                relay.step(live, cfg, now)
+                r2v = (cfg.get("relay2") or {}).get("video_id")
+                relay.step([x for x in live if x["video_id"] != r2v] if r2v else live, cfg, now)
             except Exception as e:
                 errors = ["%s: %s" % (type(e).__name__, str(e)[:120])]
             if minutes_today(st, now) >= int(cfg.get("daily_cap_h", 12)) * 60 and not st.get("relay"):
@@ -1053,6 +1120,173 @@ def run(_sleep=time.sleep, _read=None, _write=None, _relay_factory=None, _detect
     return 0
 
 
+# ── relay 2: second parallel relay on the SAME channel (manual only, own job/runner/state) ──────────
+def _mk_call():
+    tok = _oauth_token()
+    if not tok:
+        return None
+    H = {"Authorization": "Bearer " + tok, "Content-Type": "application/json"}
+
+    def call(method, path, params, body=None):
+        url = _API + path + "?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None,
+                                     headers=H, method=method)
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read() or b"{}")
+    return call
+
+
+def resolve_rtmp2():
+    """-> (rtmp url, stream key). YT_STREAM_KEY_2 secret if set, else a reusable stream titled 'YTM Relay 2' on our channel
+    (created once through the API with the existing OAuth secrets; its key is never printed)."""
+    base = os.environ.get("YT_RTMP_BASE", "rtmp://a.rtmp.youtube.com/live2").rstrip("/")
+    key = os.environ.get("YT_STREAM_KEY_2", "").strip()
+    if key:
+        return base + "/" + key, key
+    call = _mk_call()
+    if not call:
+        return None, None
+    ls = call("GET", "liveStreams", {"part": "snippet,cdn", "mine": "true", "maxResults": 50}).get("items", [])
+    it = next((i for i in ls if (i.get("snippet") or {}).get("title") == STREAM2_TITLE), None)
+    if it is None:
+        it = call("POST", "liveStreams", {"part": "snippet,cdn,contentDetails,status"},
+                  {"snippet": {"title": STREAM2_TITLE},
+                   "cdn": {"frameRate": "variable", "ingestionType": "rtmp", "resolution": "variable"},
+                   "contentDetails": {"isReusable": True}})
+        log("relay 2: created reusable stream '%s'" % STREAM2_TITLE)
+    ing = it["cdn"]["ingestionInfo"]
+    return ing["ingestionAddress"].rstrip("/") + "/" + ing["streamName"], ing["streamName"]
+
+
+def _clear_relay2(seq):
+    """relay 2 is over: drop the request from the config (only if it is still OUR request), so relay 1 may pick that match again."""
+    try:
+        cfg, sha = read_json(CFG_PATH)
+        if cfg and (cfg.get("relay2") or {}).get("seq") == seq:
+            cfg["relay2"] = None
+            write_json(CFG_PATH, cfg, sha, "ytm relay2 done")
+    except Exception as e:
+        log("clear relay2: %s" % str(e)[:100])
+
+
+def gate2():
+    out = "false"
+    try:
+        cfg, _ = read_json(CFG_PATH)
+        if cfg and (cfg.get("relay2") or {}).get("video_id"):
+            out = "true"
+    except Exception as e:
+        log("gate2 error: %s" % e)
+    log("gate2 go=%s" % out)
+    if os.environ.get("GITHUB_OUTPUT"):
+        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+            f.write("go=%s\n" % out)
+    return 0
+
+
+def run2(_sleep=time.sleep, max_loops=None):
+    """One manually chosen live -> second stream of the same channel. Ends when the match ends, the dashboard stops it
+    (cfg.relay2 removed / replaced) or the 6h job limit hits. No auto-pick, no failover, no chaining."""
+    cfg, _ = read_json(CFG_PATH)
+    cfg = cfg or {}
+    r2 = cfg.get("relay2") or {}
+    if not r2.get("video_id"):
+        log("relay2: no request -> exit")
+        return 0
+    seq = r2.get("seq")
+    st, st_sha = read_json(ST2_PATH)
+    st = st or {}
+    st.update(slot=2, run_started=int(time.time()), status="starting", error="")
+    if st.get("relay"):                                    # interrupted previous run
+        st.setdefault("history", []).insert(0, {**{k: st["relay"].get(k) for k in ("video_id", "title", "channel", "started")},
+                                                "ended": int(time.time()), "outcome": "interrupted", "note": "job restarted"})
+        st["relay"] = None
+
+    def save(msg="ytm relay2 state"):
+        nonlocal st_sha
+        try:
+            st_sha = write_json(ST2_PATH, st, st_sha, msg)
+        except Exception as e:
+            log("relay2 state write failed: %s" % e)
+
+    s1, _ = read_json(ST_PATH)
+    if ((s1 or {}).get("relay") or {}).get("video_id") == r2["video_id"]:
+        log("relay2: relay 1 already carries this match -> exit")
+        st.update(status="idle", error="Relay 1 pe ye match pehle se chal raha hai", heartbeat=0)
+        save()
+        _clear_relay2(seq)
+        return 0
+    try:
+        rtmp, key = resolve_rtmp2()
+    except Exception as e:
+        rtmp, key = None, None
+        log("relay2 stream setup failed: %s" % str(e)[:160])
+    if not rtmp:
+        st.update(status="idle", error="Relay 2 stream nahi ban paya (OAuth secrets / YT_STREAM_KEY_2 check karo)", heartbeat=0)
+        save()
+        _clear_relay2(seq)
+        return 1
+    print("::add-mask::" + key, flush=True)                 # public repo: keep the key out of the Actions log
+    os.environ["YT_STREAM_KEY_2"] = key
+    signal.signal(signal.SIGTERM, lambda *a: _stop.update(flag=True))
+    relay = Relay(st, rtmp)
+    relay.manual = True
+    det = Detector(st)
+    relay.verify = det.is_live
+    c = {"video_id": r2["video_id"], "title": r2.get("title") or "", "channel": r2.get("channel") or "",
+         "url": r2.get("url") or "https://www.youtube.com/watch?v=" + r2["video_id"]}
+    t0 = time.time()
+    deadline = t0 + MAX_RUN_MIN * 60
+    started = False
+    last_try = last_cfg = last_write = 0
+    loops = 0
+    reason = "match ended"
+    while time.time() < deadline and not _stop["flag"]:
+        now = time.time()
+        if not st.get("relay"):
+            if started:
+                break                                       # relay finished by itself (source ended / failed)
+            if now - t0 > 600:
+                reason = "not live after 10 min"
+                relay._record_fail(c, reason)
+                break
+            if now - last_try >= 20:
+                last_try = now
+                h = st.setdefault("history", [])
+                n0 = len(h)
+                relay.start(c)
+                started = bool(st.get("relay"))
+                if len(h) > n0 and len(h) > 1 and h[1].get("outcome") == "failed" and h[1].get("video_id") == c["video_id"]:
+                    h.pop(0)                                # same probe failure again: do not spam the history
+        else:
+            relay.poll()
+            relay.caption_tick(now)
+        if now - last_cfg >= CFG_EVERY:
+            last_cfg = now
+            try:
+                cur = (read_json(CFG_PATH)[0] or {}).get("relay2") or {}
+            except Exception:
+                cur = {"seq": seq}                          # GitHub hiccup: keep going
+            if cur.get("seq") != seq:
+                reason = "stopped"
+                relay.stop("stopped", "relay 2 stop")
+                break
+        st.update(status="relaying" if st.get("relay") else "starting", heartbeat=int(now))
+        if now - last_write >= HEARTBEAT or loops % 6 == 0:
+            last_write = now
+            save()
+        loops += 1
+        if max_loops and loops >= max_loops:
+            break
+        _sleep(5)
+    if st.get("relay"):
+        relay.stop("ended", "6h job limit, start again" if time.time() >= deadline else "cancelled")
+    st.update(status="idle", heartbeat=0, error="" if reason in ("match ended", "stopped") else reason)
+    save("ytm relay2 final")
+    _clear_relay2(seq)
+    return 0
+
+
 def cfg_poll(st):
     return max(30, min(300, int(st.get("poll_secs", 60))))
 
@@ -1062,4 +1296,10 @@ if __name__ == "__main__":
     if _cmd == "endlive":                       # one-off: complete any ACTIVE broadcast on our channel
         print("endlive:", end_broadcast())
         sys.exit(0)
+    if _cmd == "gate2":
+        sys.exit(gate2())
+    if _cmd == "run2":
+        SLOT = "2"
+        FRAME_FILE = "ytm_frame2.jpg"
+        sys.exit(run2())
     sys.exit(gate() if _cmd == "gate" else run())
