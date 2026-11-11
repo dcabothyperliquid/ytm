@@ -3,6 +3,7 @@ name: YT Live Mirror 2
 # Relay 2: a SECOND, manual-only relay on the same channel, started from the dashboard
 # ("Relay 2" button next to a live match). Own runner, own stream, own state (ytm_state2.json).
 # No cron: the dashboard dispatches it; it ends when the match ends or Stop is pressed.
+# 6h limit: ~40 min before it, the run queues its own successor (waits behind it) which resumes the same match.
 
 on:
   workflow_dispatch: {}
@@ -13,7 +14,7 @@ permissions:
 
 concurrency:
   group: yt-mirror2
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   mirror2:

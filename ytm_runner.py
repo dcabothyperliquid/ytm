@@ -1008,18 +1008,20 @@ def apply_commands(cfg, st, relay, live, now):
 # ── entry points ─────────────────────────────────────────────────────────
 # ── self-chaining (GitHub cron is best-effort and can silently skip runs) ─
 WORKFLOW_FILE = "yt-mirror.yml"
+WORKFLOW2_FILE = "yt-mirror2.yml"
 
 
-def ensure_next_queued():
+def ensure_next_queued(wf=None):
     """Keep one run waiting behind this one (concurrency group 'yt-mirror'), so the chain never
     depends on the */15 cron firing. workflow_dispatch with GITHUB_TOKEN is allowed to trigger runs."""
     try:
+        wf = wf or WORKFLOW_FILE
         for stt in ("queued", "pending", "waiting"):
-            r = gh("GET", "actions/workflows/%s/runs?status=%s&per_page=5" % (WORKFLOW_FILE, stt))
+            r = gh("GET", "actions/workflows/%s/runs?status=%s&per_page=5" % (wf, stt))
             if r.get("workflow_runs"):
                 return False                                   # something already waiting
-        gh("POST", "actions/workflows/%s/dispatches" % WORKFLOW_FILE, {"ref": "main"})
-        log("next run queued (self-chain)")
+        gh("POST", "actions/workflows/%s/dispatches" % wf, {"ref": "main"})
+        log("next run queued (self-chain) %s" % wf)
         return True
     except Exception as e:
         log("self-chain failed: %s" % e)
@@ -1216,6 +1218,13 @@ def run2(_sleep=time.sleep, max_loops=None):
         save()
         _clear_relay2(seq)
         return 0
+    cap = int(cfg.get("daily_cap_h", 12)) * 60
+    if minutes_today(st) >= cap:
+        log("relay2: daily cap reached -> exit")
+        st.update(status="idle", error="Relay 2 ka daily cap poora ho gaya", heartbeat=0)
+        save()
+        _clear_relay2(seq)
+        return 0
     try:
         rtmp, key = resolve_rtmp2()
     except Exception as e:
@@ -1237,6 +1246,8 @@ def run2(_sleep=time.sleep, max_loops=None):
          "url": r2.get("url") or "https://www.youtube.com/watch?v=" + r2["video_id"]}
     t0 = time.time()
     deadline = t0 + MAX_RUN_MIN * 60
+    chain_at = t0 + max(60, MAX_RUN_MIN - 40) * 60          # queue the successor ~40 min before the 6h limit (like relay 1)
+    queued = False
     started = False
     last_try = last_cfg = last_write = 0
     loops = 0
@@ -1264,13 +1275,22 @@ def run2(_sleep=time.sleep, max_loops=None):
         if now - last_cfg >= CFG_EVERY:
             last_cfg = now
             try:
-                cur = (read_json(CFG_PATH)[0] or {}).get("relay2") or {}
+                c2 = read_json(CFG_PATH)[0] or {}
+                cur = c2.get("relay2") or {}
+                cap = int(c2.get("daily_cap_h", cap // 60)) * 60
             except Exception:
                 cur = {"seq": seq}                          # GitHub hiccup: keep going
             if cur.get("seq") != seq:
                 reason = "stopped"
                 relay.stop("stopped", "relay 2 stop")
                 break
+        if st.get("relay") and minutes_today(st, now) >= cap:
+            reason = "Relay 2 ka daily cap poora ho gaya"
+            relay.stop("stopped", "daily cap")
+            break
+        if st.get("relay") and not queued and now >= chain_at and os.environ.get("GITHUB_ACTIONS"):
+            queued = True
+            ensure_next_queued(WORKFLOW2_FILE)               # waits behind this run (concurrency group), takes over at the limit
         st.update(status="relaying" if st.get("relay") else "starting", heartbeat=int(now))
         if now - last_write >= HEARTBEAT or loops % 6 == 0:
             last_write = now
@@ -1279,11 +1299,20 @@ def run2(_sleep=time.sleep, max_loops=None):
         if max_loops and loops >= max_loops:
             break
         _sleep(5)
+    chained = False
     if st.get("relay"):
-        relay.stop("ended", "6h job limit, start again" if time.time() >= deadline else "cancelled")
+        if time.time() >= deadline and not _stop["flag"] and reason == "match ended":
+            relay.stop("interrupted", "job ended, next run resumes")   # broadcast stays up, next run carries on (gap ~1-2 min)
+            chained = True
+        else:
+            relay.stop("ended", "cancelled")
     st.update(status="idle", heartbeat=0, error="" if reason in ("match ended", "stopped") else reason)
     save("ytm relay2 final")
-    _clear_relay2(seq)
+    if chained:
+        if os.environ.get("GITHUB_ACTIONS"):
+            ensure_next_queued(WORKFLOW2_FILE)              # no-op if the successor is already waiting
+    else:
+        _clear_relay2(seq)
     return 0
 
 
