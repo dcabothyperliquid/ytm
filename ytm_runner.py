@@ -381,6 +381,11 @@ def _ensure_broadcast(call, src_title, channel):
                 return "%s %s" % (e, e.read().decode("utf8", "ignore")[:300])
             except Exception:
                 return str(e)[:300]
+        trc = DIAG.setdefault("tr_cnt", {})
+        if time.time() - DIAG.get("tr_at", 0) < 120 or trc.get(bc["id"], 0) >= 4:
+            return "wait"                                   # transition = 50 units: once per 2 min, max 4 per broadcast (kick is free)
+        DIAG["tr_at"] = time.time()
+        trc[bc["id"]] = trc.get(bc["id"], 0) + 1
         try:
             call("POST", "liveBroadcasts/transition", {"broadcastStatus": "live", "id": bc["id"], "part": "status"}, {})
         except Exception as e:
@@ -476,9 +481,12 @@ def set_caption(src_title, channel=""):
         return _ensure_broadcast(call, src_title, channel)
     it = items[0]
     title, desc = caption_from(src_title, channel)
-    sn = {"title": title, "description": desc, "scheduledStartTime": it["snippet"]["scheduledStartTime"]}
-    call("PUT", "liveBroadcasts", {"part": "snippet"}, {"id": it["id"], "snippet": sn})
-    log("caption set: " + title)
+    capt = DIAG.setdefault("capt_ids", set())
+    if it["id"] not in capt:                                # PUT costs 50 quota units: once per broadcast, never per tick
+        sn = {"title": title, "description": desc, "scheduledStartTime": it["snippet"]["scheduledStartTime"]}
+        call("PUT", "liveBroadcasts", {"part": "snippet"}, {"id": it["id"], "snippet": sn})
+        capt.add(it["id"])
+        log("caption set: " + title)
     if (it.get("status") or {}).get("lifeCycleStatus") != "live":
         return "wait"                                       # titled, but not LIVE yet: keep watching (watchdog re-kicks)
     return "done"
@@ -945,7 +953,7 @@ class Relay:
         if r and r.get("caption_done"):
             self._live_watch(now, r)
             return
-        if not r or now - r.get("caption_try", 0) < (25 if (r.get("caption_n", 0) < 12 or r.get("kick_n", 0) < 6) else 600):
+        if not r or now - r.get("caption_try", 0) < (25 if r.get("caption_n", 0) < 12 else (120 if r.get("kick_n", 0) < 6 else 600)):
             return
         r["caption_try"] = now
         r["caption_n"] = r.get("caption_n", 0) + 1
@@ -970,9 +978,9 @@ class Relay:
                 self._kick_ingest(r)
 
     def _live_watch(self, now, r, _chk=None):
-        """After the caption is done: every ~3 min verify the broadcast is really LIVE. Two misses in a row (relay up, YouTube not live)
+        """After the caption is done: every ~5 min verify the broadcast is really LIVE. Two misses in a row (relay up, YouTube not live)
         -> restart the caption/kick cycle (re-creates/binds/kicks the broadcast) instead of showing LIVE forever."""
-        if now - r.get("lv_at", 0) < 180 or now - r.get("started", now) < 120:
+        if now - r.get("lv_at", 0) < 300 or now - r.get("started", now) < 120:
             return
         r["lv_at"] = now
         try:
