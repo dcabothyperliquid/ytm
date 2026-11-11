@@ -38,10 +38,18 @@ jobs:
 
       - name: Install ffmpeg + yt-dlp
         if: steps.gate.outputs.go == 'true'
+        timeout-minutes: 12          # a hung apt/pip once blocked this step for 1h and the mirror was down: fail fast, cron retries
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg
-          pip install -U "yt-dlp[default]"
+          for i in 1 2 3; do
+            timeout 240 sudo apt-get update -qq && timeout 300 sudo apt-get install -y -qq ffmpeg && break
+            echo "apt retry $i"; sleep 5
+          done
+          command -v ffmpeg
+          for i in 1 2 3; do
+            timeout 180 pip install -U "yt-dlp[default]" && break
+            echo "pip retry $i"; sleep 5
+          done
+          command -v yt-dlp
           node --version
 
       - name: Cookies (optional)
