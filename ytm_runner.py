@@ -484,6 +484,33 @@ def set_caption(src_title, channel=""):
     return "done"
 
 
+def check_live():
+    """True = our bound broadcast is LIVE on YouTube, False = it is not (ready/created/complete/none), None = cannot tell (no OAuth, API error).
+    1 quota unit; used by the live-watch so a relay never looks LIVE in the dashboard while YouTube shows nothing."""
+    tok = _oauth_token()
+    if not tok:
+        return None
+    H = {"Authorization": "Bearer " + tok, "Content-Type": "application/json"}
+
+    def call(method, path, params):
+        req = urllib.request.Request(_API + path + "?" + urllib.parse.urlencode(params), headers=H, method=method)
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read() or b"{}")
+    try:
+        sid = _my_stream_id(call)
+        if SLOT == "2" and not sid:
+            return None
+        items = call("GET", "liveBroadcasts", {"part": "id,status,contentDetails", "mine": "true", "maxResults": 10}).get("items", [])
+    except Exception as e:
+        log("check_live: %s" % str(e)[:100])
+        return None
+    if sid:
+        items = [i for i in items if (i.get("contentDetails") or {}).get("boundStreamId") == sid]
+    ended = DIAG.get("ended_ids", set())
+    st = [(i.get("status") or {}).get("lifeCycleStatus") for i in items if i["id"] not in ended]
+    return "live" in st
+
+
 def end_broadcast():
     """Relay stopped: move our ACTIVE broadcast to 'complete' so the channel stops showing LIVE.
     (Broadcasts are created with enableAutoStop=False, so killing ffmpeg alone leaves them live.)"""
@@ -915,7 +942,10 @@ class Relay:
     def caption_tick(self, now, _set=None):
         """Retry every ~25s (max 12x) until our broadcast is active, then set title/description once."""
         r = self.st.get("relay")
-        if not r or r.get("caption_done") or now - r.get("caption_try", 0) < (25 if (r.get("caption_n", 0) < 12 or r.get("kick_n", 0) < 6) else 600):
+        if r and r.get("caption_done"):
+            self._live_watch(now, r)
+            return
+        if not r or now - r.get("caption_try", 0) < (25 if (r.get("caption_n", 0) < 12 or r.get("kick_n", 0) < 6) else 600):
             return
         r["caption_try"] = now
         r["caption_n"] = r.get("caption_n", 0) + 1
@@ -938,6 +968,28 @@ class Relay:
             bcs = yt.get("broadcasts", []) if isinstance(yt, dict) else []
             if any(b[1] in ("ready", "testing") for b in bcs):   # still not live although a broadcast is waiting
                 self._kick_ingest(r)
+
+    def _live_watch(self, now, r, _chk=None):
+        """After the caption is done: every ~3 min verify the broadcast is really LIVE. Two misses in a row (relay up, YouTube not live)
+        -> restart the caption/kick cycle (re-creates/binds/kicks the broadcast) instead of showing LIVE forever."""
+        if now - r.get("lv_at", 0) < 180 or now - r.get("started", now) < 120:
+            return
+        r["lv_at"] = now
+        try:
+            res = (_chk or check_live)()
+        except Exception as e:
+            log("live watch error: %s" % str(e)[:100])
+            return
+        if res is True:
+            r["yt_live"], r["lv_bad"] = True, 0
+        elif res is False:
+            r["yt_live"], r["lv_bad"] = False, r.get("lv_bad", 0) + 1
+            if r["lv_bad"] >= 2:
+                log("relay up but broadcast NOT live (x%d) -> restarting caption/kick cycle" % r["lv_bad"])
+                for k in ("caption_done", "kicked"):
+                    r[k] = False
+                r["caption_n"], r["kick_n"], r["lv_bad"], r["caption_try"] = 0, 0, 0, 0
+                r["kick_early"] = True
 
     def _kick_ingest(self, r):
         """Stuck on 'ready' (stream was flowing when the broadcast got bound): pause ingest so YouTube marks the stream idle,
