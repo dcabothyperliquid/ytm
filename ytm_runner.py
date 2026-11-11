@@ -570,7 +570,7 @@ def mark_present(hls):
         return None
 
 
-LOGO_PROBE_VER = 4          # bump when sizing logic changes: cached per-match specs from older logic are re-probed
+LOGO_PROBE_VER = 5          # bump when sizing logic changes: cached per-match specs from older logic are re-probed
 
 
 def logo_probe(hls):
@@ -657,7 +657,9 @@ def logo_probe(hls):
             d = math.hypot(bw, bh)                        # wide / square source: circle through the box corners covers it all
         else:
             d = max(bw, bh) * 1.08 + 4                    # round-ish source: small safety margin (no tiny edge peeking)
-        w = int(min(float(os.environ.get("YTM_LOGO_MAX", "260")), max(90, d)))
+        # never smaller than the default corner circle (YTM_LOGO_W, 170): the probe often catches only part of a badge
+        # (low-contrast ring / top half), and a small circle then leaves the rest of the source logo peeking out
+        w = int(min(float(os.environ.get("YTM_LOGO_MAX", "260")), max(float(os.environ.get("YTM_LOGO_W", "170")), d)))
         h = w
         bleed = int(w * 0.12)                             # a circle fully inside the frame can't cover a badge hugging the corner -> allow a small bleed past the edge
         x = int(min(1280 - w + bleed, max(-bleed, cx - w / 2.0)))
