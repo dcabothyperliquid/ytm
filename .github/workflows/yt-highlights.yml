@@ -1,7 +1,7 @@
 name: YT Highlights + Shorts
 
 # Finished live on YOUR channel -> highlights.mp4 + vertical shorts -> DRAFT release (only you see it).
-# Auto: cron checks for a new ended stream. Manual: Run workflow (optionally a video id/url).
+# Auto: the mirror triggers this the moment a relay ends (after_end), cron every 2h is only the fallback. Manual: Run workflow (optionally a video id/url).
 # Runs on GitHub Actions only (public repo = free minutes). Nothing touches Render.
 
 on:
@@ -27,6 +27,10 @@ on:
         description: "run = process a stream, apply = apply dashboard edit/re-make commands"
         required: false
         default: "run"
+      after_end:
+        description: "set by the mirror when a relay ended (waits for the VOD to be ready)"
+        required: false
+        default: ""
   schedule:
     - cron: "25 */2 * * *"
 
@@ -45,6 +49,7 @@ env:
   HL_TARGET_MIN: ${{ github.event.inputs.target_min || '10' }}
   HL_MODEL: ${{ github.event.inputs.model || 'small' }}
   HL_MODE: ${{ github.event.inputs.mode || '' }}
+  HL_AFTER_END: ${{ github.event.inputs.after_end || '' }}
   HL_LANG: ${{ vars.HL_LANG || 'hi' }}
   YT_COOKIES: ${{ secrets.YT_COOKIES }}
 
@@ -71,7 +76,7 @@ jobs:
         timeout-minutes: 15
         run: |
           for i in 1 2 3; do
-            timeout 240 sudo apt-get update -qq && timeout 300 sudo apt-get install -y -qq ffmpeg && break
+            timeout 240 sudo apt-get update -qq && timeout 300 sudo apt-get install -y -qq ffmpeg fonts-dejavu-core && break
             echo "apt retry $i"; sleep 5
           done
           pip install -q numpy faster-whisper

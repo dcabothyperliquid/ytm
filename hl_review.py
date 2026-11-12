@@ -147,11 +147,12 @@ def publish_match(vid, title, outdir, res, tag_full="hl-"):
     now = int(time.time())
     entry = {"vid": vid, "title": title, "processed": now, "day": time.strftime("%Y-%m-%d", time.gmtime(now + IST)),
              "dur_min": round(res["dur"] / 60.0, 1), "score": match_score(res["ranked"]),
+             "finish": res.get("finish", 0.0),
              "release_id": release_id(tag_full + vid), "prev_release_id": release_id(tag),
              "highlight": {"file": res["highlight"]["file"], "dur": res["highlight"]["dur"],
                            "chapters": res["highlight"]["chapters"],
                            "preview": preview_url(vid, "highlights_p.mp4")},
-             "shorts": [{k: s[k] for k in ("id", "file", "event", "score", "start", "end", "title", "heard", "preview_name")}
+             "shorts": [{k: s[k] for k in ("id", "file", "event", "score", "start", "end", "title", "heard", "preview_name", "label") if k in s}
                         | {"preview": preview_url(vid, s["preview_name"])} for s in res["shorts"]]}
 
     def mut(st):
@@ -217,7 +218,7 @@ def do_edit(H, c):
     nid = "%s_e%d" % (base, c["id"] % 100000)
     out = os.path.join(H.WORK, nid + ".mp4")
     pout = os.path.join(H.WORK, nid + "_p.mp4")
-    H.cut(sec, start - a, end - a, out, vertical=True)
+    H.cut(sec, start - a, end - a, out, vertical=True, label=s.get("label") or H.overlay_label(s.get("event", "")))
     make_preview(out, pout, height=480, crf=33)
     upload_asset(m["release_id"], out)
     upload_asset(m["prev_release_id"], pout)

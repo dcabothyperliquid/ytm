@@ -45,11 +45,15 @@ EVENTS = {   # name: (regex, weight, label, hashtag)
     "milestone": (r"century|सेंचुरी|शतक|fifty|फिफ्टी|अर्धशतक|half[\s-]?century", 0.7, "MILESTONE", "#century"),
     "catch": (r"\bcatch(?:ed)?\b|कैच", 0.6, "CATCH", "#catch"),
     "four": (r"\bfour\b|चौका|चौके|चौक्का|chauka|boundary|बाउंड्री", 0.5, "FOUR", "#four"),
+    "finish": (r"last[\s-]?over|last[\s-]?ball|final[\s-]?over|आखिरी\s*ओवर|आख़िरी\s*ओवर|अंतिम\s*ओवर|आखिरी\s*गेंद|need(?:s|ed)?\s+\d+\s+(?:runs?\s+)?(?:from|off)|\d+\s*(?:रन|runs?)\s*(?:चाहिए|चाहिये|needed|to win)|super[\s-]?over|सुपर\s*ओवर", 0.9, "LAST OVER", "#lastover"),
     "ace": (r"\bace\b|match[\s-]?point|set[\s-]?point|tie[\s-]?break", 0.6, "BIG POINT", "#tennis"),
 }
-EMOJI = {"hattrick": "🔥", "six": "💥", "wicket": "☝️", "milestone": "🎉", "catch": "🙌",
+EMOJI = {"finish": "😱", "hattrick": "🔥", "six": "💥", "wicket": "☝️", "milestone": "🎉", "catch": "🙌",
          "four": "🏏", "ace": "🎾", "moment": "⚡"}
-WHISPER_HINT = "छक्का चौका विकेट आउट कैच हैट्रिक बोल्ड six four wicket out catch hat-trick century"
+WHISPER_HINT = "छक्का चौका विकेट आउट कैच हैट्रिक बोल्ड आखिरी ओवर रन चाहिए six four wicket out catch hat-trick century last over"
+GENERIC = ["CROWD GOES WILD", "WHAT A MOMENT", "BIG MOMENT", "SEE THIS", "UNBELIEVABLE"]
+FONT = next((f for f in ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                         "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf") if os.path.exists(f)), "")
 
 
 # ---------------------------------------------------------------- helpers
@@ -125,21 +129,8 @@ def cmd_cookies():
     open(COOKIES, "w").write(raw + "\n")
 
 
-def cmd_gate():
-    """Decide what to do. Outputs: go, mode (run|apply), vid. Cheap (no ffmpeg)."""
-    manual = os.environ.get("HL_VIDEO", "").strip()
-    if os.environ.get("HL_MODE", "") == "apply" or (not manual and hl_review.pending_commands()):
-        note("pending dashboard commands -> apply mode")
-        return out_gh(go="true", mode="apply", vid="")
-    if manual:
-        m = re.search(r"(?:v=|youtu\.be/|/live/|/shorts/)([0-9A-Za-z_-]{11})", manual) or re.match(r"^([0-9A-Za-z_-]{11})$", manual)
-        if not m:
-            log("manual video id/url not understood:", manual)
-            return out_gh(go="false", vid="")
-        return out_gh(go="true", mode="run", vid=m.group(1))
-    if not hl_review.load_cfg().get("auto", True):
-        log("auto OFF in dashboard config")
-        return out_gh(go="false", vid="")
+def find_candidates():
+    """Ended, long-enough, not-yet-processed videos on our channel (newest first)."""
     done = {r["tag_name"] for r in gh_releases()}
     cands = []
     for tab in ("streams", "videos"):
@@ -161,6 +152,34 @@ def cmd_gate():
                 continue
             if all(c[0] != vid for c in cands):
                 cands.append((vid, title, dur))
+    return cands
+
+
+def cmd_gate():
+    """Decide what to do. Outputs: go, mode (run|apply), vid. Cheap (no ffmpeg)."""
+    manual = os.environ.get("HL_VIDEO", "").strip()
+    if os.environ.get("HL_MODE", "") == "apply" or (not manual and hl_review.pending_commands()):
+        note("pending dashboard commands -> apply mode")
+        return out_gh(go="true", mode="apply", vid="")
+    if manual:
+        m = re.search(r"(?:v=|youtu\.be/|/live/|/shorts/)([0-9A-Za-z_-]{11})", manual) or re.match(r"^([0-9A-Za-z_-]{11})$", manual)
+        if not m:
+            log("manual video id/url not understood:", manual)
+            return out_gh(go="false", vid="")
+        return out_gh(go="true", mode="run", vid=m.group(1))
+    if not hl_review.load_cfg().get("auto", True):
+        log("auto OFF in dashboard config")
+        return out_gh(go="false", vid="")
+    after_end = os.environ.get("HL_AFTER_END", "") == "true"
+    # triggered right when the relay ended: our VOD needs a few minutes before YouTube reports its duration
+    tries = 14 if after_end else 1
+    cands = []
+    for k in range(tries):
+        cands = find_candidates()
+        if cands or k == tries - 1:
+            break
+        log("stream-end trigger: VOD not ready yet, retry %d/%d in 90s" % (k + 1, tries - 1))
+        time.sleep(90)
     if not cands:
         log("nothing new on @%s" % CHANNEL)
         return out_gh(go="false", vid="")
@@ -203,16 +222,17 @@ def find_moments(db, dur):
     base = np.median(sliding_window_view(pad, w), axis=1)
     ex = sm - base
     # broadcast audio is heavily compressed -> low floor; candidate count scales with length (~1 per 4 min)
-    want = min(MAX_CAND, max(8, int(dur / 240)))
-    thr = max(1.5, min(4.0, float(np.percentile(ex, 96))))
+    want = min(MAX_CAND, max(10, int(dur / 150)))
+    thr = max(0.7, min(4.0, float(np.percentile(ex, 95))))
+    min_fill = min(want, 8)                         # flat/compressed audio: still hand the ranker something to work with
     order = np.argsort(ex)[::-1]
     picks = []
     for i in order:
-        if ex[i] < thr or len(picks) >= want:
+        if len(picks) >= want or (ex[i] < thr and len(picks) >= min_fill) or ex[i] <= 0.2:
             break
         if i * HOP < 15 or i * HOP > dur - 5:
             continue
-        if all(abs(int(i) - j) * HOP >= 40 for j in picks):
+        if all(abs(int(i) - j) * HOP >= 30 for j in picks):
             picks.append(int(i))
     top = float(ex[picks[0]]) if picks else 1.0
     moments = []
@@ -307,12 +327,28 @@ ENC = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv4
        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2", "-movflags", "+faststart"]
 
 
-def cut(src, start, end, out, vertical=False, height=1080):
+def overlay_label(event, k=0):
+    """Short ALL-CAPS banner text (latin only: the runner font has no Devanagari)."""
+    if event in EVENTS:
+        return EVENTS[event][2] + ("!" if event != "finish" else "")
+    return GENERIC[k % len(GENERIC)]
+
+
+def _banner(label):
+    if not label or not FONT:
+        return ""
+    t = re.sub(r"[^A-Z0-9 !?-]", "", label.upper())[:24]
+    return (",drawbox=x=0:y=150:w=iw:h=190:color=black@0.55:t=fill,"
+            "drawtext=fontfile=%s:text='%s':fontsize=104:fontcolor=yellow:borderw=5:bordercolor=black:"
+            "x=(w-text_w)/2:y=190:enable='lt(t,6)'" % (FONT, t))
+
+
+def cut(src, start, end, out, vertical=False, height=1080, label=None):
     d = end - start
     af = "afade=t=in:d=0.2,afade=t=out:st=%.2f:d=0.3" % max(0, d - 0.3)
     if vertical:
         fc = ("[0:v]split=2[a][b];[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
-              "boxblur=25:3,eq=brightness=-0.08[bg];[b]scale=1080:-2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,fps=30[v]")
+              "boxblur=25:3,eq=brightness=-0.08[bg];[b]scale=1080:-2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,fps=30" + _banner(label) + "[v]")
         cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", "%.2f" % start, "-i", src, "-t", "%.2f" % d,
                "-filter_complex", fc, "-map", "[v]", "-map", "0:a:0?", "-af", af] + ENC + [out]
     else:
@@ -347,7 +383,12 @@ def process(src, outdir, meta):
     os.remove(wav)
     for m in moments:
         m["score"] = round(score(m), 3)
+        if m["start"] > dur - 360:                 # the finish of the match matters most (last ~6 min)
+            m["score"] = round(m["score"] + 0.12, 3)
     ranked = sorted(moments, key=lambda m: m["score"], reverse=True)
+    tail = [m for m in moments if m["end"] > dur - 420]
+    finish = round(min(1.0, (max([m["audio"] for m in tail]) if tail else 0.0) * 0.6
+                       + (0.4 if any(m["event"] == "finish" for m in tail) else 0.0)), 3)
 
     # ---- highlights: best moments until target length, chronological
     chosen, total = [], 0.0
@@ -384,7 +425,8 @@ def process(src, outdir, meta):
             s = e - 50
         used.append((s, e))
         name = "short_%02d_%s.mp4" % (len(shorts) + 1, m["event"])
-        cut(src, s, e, os.path.join(outdir, name), vertical=True)
+        m["label"] = overlay_label(m["event"], len(shorts))
+        cut(src, s, e, os.path.join(outdir, name), vertical=True, label=m["label"])
         shorts.append((name, m, s, e))
         log("short", name)
     for f in glob.glob(os.path.join(segdir, "*")):
@@ -400,7 +442,7 @@ def process(src, outdir, meta):
         L.append("%s %s %s" % (fmt(ct), EMOJI.get(ev, "⚡"), EVENTS[ev][2].title() if ev in EVENTS else "Big moment"))
     L += ["", "== SHORTS (check, then upload) =="]
     for name, m, s, e in shorts:
-        lab = EVENTS[m["event"]][2] if m["event"] in EVENTS else "BIG MOMENT"
+        lab = m.get("label") or "BIG MOMENT"
         tag = EVENTS[m["event"]][3] if m["event"] in EVENTS else ""
         L.append("%s | src %s-%s | score %.2f | audio +%.0fdB" % (name, fmt(s), fmt(e), m["score"], m["db"]))
         L.append("  title: %s %s | %s #shorts %s" % (EMOJI.get(m["event"], "⚡"), lab.title(), mt, tag))
@@ -413,12 +455,12 @@ def process(src, outdir, meta):
     note("rendered: highlights %s + %d shorts" % (fmt(total), len(shorts)))
     out_shorts = []
     for name, m, s_, e_ in shorts:
-        lab = EVENTS[m["event"]][2] if m["event"] in EVENTS else "BIG MOMENT"
+        lab = m.get("label") or "BIG MOMENT"
         tg = EVENTS[m["event"]][3] if m["event"] in EVENTS else ""
         out_shorts.append({"id": name[:-4], "file": name, "event": m["event"], "score": m["score"],
                            "start": round(s_, 1), "end": round(e_, 1), "heard": m["text"][:140],
-                           "title": ("%s %s | %s #shorts %s" % (EMOJI.get(m["event"], "⚡"), lab.title(), mt, tg)).strip()})
-    return {"dur": dur, "ranked": ranked,
+                           "label": lab, "title": ("%s %s | %s #shorts %s" % (EMOJI.get(m["event"], "⚡"), lab.title().rstrip("!"), mt, tg)).strip()})
+    return {"dur": dur, "ranked": ranked, "finish": finish,
             "highlight": {"file": "highlights.mp4", "dur": round(total), "chapters": [[round(ct), ev] for ct, ev, at in chapters]},
             "shorts": out_shorts}
 

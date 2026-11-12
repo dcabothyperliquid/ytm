@@ -826,6 +826,8 @@ class Relay:
                 end_broadcast()
         except Exception as e:
             log("end_broadcast: %s" % str(e)[:100])
+        if outcome == "ended":                        # match finished by itself -> highlights now (not on manual/cap stop)
+            trigger_highlights()
         self.st.setdefault("history", []).insert(0, {
             "video_id": r.get("video_id"), "title": r.get("title"), "channel": r.get("channel"),
             "started": r.get("started"), "ended": int(time.time()), "outcome": outcome, "note": note})
@@ -1085,7 +1087,7 @@ WORKFLOW_FILE = "yt-mirror.yml"
 WORKFLOW2_FILE = "yt-mirror2.yml"
 
 
-def ensure_next_queued(wf=None):
+def ensure_next_queued(wf=None, inputs=None):
     """Keep one run waiting behind this one (concurrency group 'yt-mirror'), so the chain never
     depends on the */15 cron firing. workflow_dispatch with GITHUB_TOKEN is allowed to trigger runs."""
     try:
@@ -1094,11 +1096,29 @@ def ensure_next_queued(wf=None):
             r = gh("GET", "actions/workflows/%s/runs?status=%s&per_page=5" % (wf, stt))
             if r.get("workflow_runs"):
                 return False                                   # something already waiting
-        gh("POST", "actions/workflows/%s/dispatches" % wf, {"ref": "main"})
+        body = {"ref": "main"}
+        if inputs:
+            body["inputs"] = inputs
+        gh("POST", "actions/workflows/%s/dispatches" % wf, body)
         log("next run queued (self-chain) %s" % wf)
         return True
     except Exception as e:
         log("self-chain failed: %s" % e)
+        return False
+
+HL_WORKFLOW_FILE = "yt-highlights.yml"
+
+
+def trigger_highlights():
+    """Source stream ended -> start the highlights workflow right away (no 2h cron wait).
+    The workflow itself waits for our VOD to finish processing. Dedup: skipped if one is already waiting;
+    auto OFF in dashboard config (hl_config.json) is honoured by the workflow gate."""
+    if not os.environ.get("GITHUB_ACTIONS"):
+        return False
+    try:
+        return ensure_next_queued(HL_WORKFLOW_FILE, {"after_end": "true"})
+    except Exception as e:
+        log("trigger_highlights: %s" % str(e)[:100])
         return False
 
 
