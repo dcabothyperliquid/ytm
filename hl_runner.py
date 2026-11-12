@@ -172,6 +172,7 @@ def cmd_gate():
         if not m:
             log("manual video id/url not understood:", manual)
             return out_gh(go="false", vid="")
+        hl_review.set_live("queued", "Manual run shuru ho raha hai", vid=m.group(1), force=True)
         return out_gh(go="true", mode="run", vid=m.group(1))
     if not hl_review.load_cfg().get("auto", True):
         log("auto OFF in dashboard config")
@@ -185,12 +186,14 @@ def cmd_gate():
         if cands or k == tries - 1:
             break
         log("stream-end trigger: VOD not ready yet, retry %d/%d in 90s" % (k + 1, tries - 1))
+        hl_review.set_live("waiting_vod", "Stream khatam — YouTube VOD ready hone ka wait (%d/%d)" % (k + 1, tries - 1), cur=k + 1, total=tries - 1)
         time.sleep(90)
     if not cands:
         log("nothing new on @%s" % CHANNEL)
         return out_gh(go="false", vid="")
     log("candidates:", cands)
     note("picked %s | %.0f min | %s" % (cands[0][0], cands[0][2] / 60, cands[0][1][:80]))
+    hl_review.set_live("queued", "Naya stream mila (%.0f min) — worker tayyar ho raha hai" % (cands[0][2] / 60), vid=cands[0][0], title=clean_title(cands[0][1]), force=True)
     out_gh(go="true", mode="run", vid=cands[0][0])
 
 
@@ -307,6 +310,7 @@ def transcribe_moments(moments, wav):
         m["event"], m["kw"] = classify(m["text"])
         if (i + 1) % 10 == 0:
             log("transcribed %d/%d (%.0fs)" % (i + 1, len(moments), time.time() - t0))
+        hl_review.set_live("transcribe", "Commentary sun raha hai (whisper)", cur=i + 1, total=len(moments))
     note("whisper %s done: %d windows in %.0fs" % (MODEL, len(moments), time.time() - t0))
 
 
@@ -551,13 +555,16 @@ def process(src, outdir, meta):
     dur = duration_of(src)
     log("source %.1f min" % (dur / 60))
     note("source %.1f min" % (dur / 60))
+    hl_review.set_live("audio", "Audio nikal raha hai + crowd/commentary peaks dhoondh raha hai (%.0f min ka stream)" % (dur / 60))
     wav = os.path.join(os.path.dirname(os.path.abspath(outdir)), "audio.s16")
     sh(["ffmpeg", "-y", "-loglevel", "error", "-i", src, "-vn", "-ac", "1", "-ar", str(SR), "-f", "s16le", wav])
     db = energy_track(wav)
     moments = find_moments(db, dur)
     if not moments:
         raise RuntimeError("no audio peaks found (silent / flat source?)")
+    hl_review.set_live("transcribe", "Commentary sun raha hai (whisper) — %d moments" % len(moments), cur=0, total=len(moments), force=True)
     transcribe_moments(moments, wav)
+    hl_review.set_live("stories", "Stories bana raha hai (over / fifty / hat-trick / last over)", force=True)
     try:
         fifty = fifty_stories(moments, dur, db, wav)
     except Exception as e:                         # noqa -- never lose the whole run over this
@@ -587,6 +594,7 @@ def process(src, outdir, meta):
     lst, chapters, t = [], [], 0.0
     for i, s in enumerate(segs):
         p = os.path.join(segdir, "s%03d.mp4" % i)
+        hl_review.set_live("cut", "Highlights ke clips kaat raha hai", cur=i + 1, total=len(segs))
         cut(src, s["start"], s["end"], p, height=MAX_H)
         lst.append("file '%s'" % os.path.abspath(p))
         chapters.append((t, s["event"], s["start"]))
@@ -621,6 +629,7 @@ def process(src, outdir, meta):
                 continue
             used.append((s, e))
         name = "short_%02d_%s.mp4" % (len(shorts) + 1, m["event"])
+        hl_review.set_live("shorts", "Short render ho raha hai: %s" % (m.get("label") or m["event"]), cur=len(shorts) + 1, total=min(N_SHORTS, len(cands)), force=True)
         render_story(src, m, os.path.join(outdir, name))
         shorts.append((name, m, s, e))
         log("short", name, m["label"], "parts=%d" % len(m["parts"]))
@@ -674,6 +683,7 @@ def run_vid(vid, target_min=None):
     url = "https://www.youtube.com/watch?v=" + vid
     info = sh(ytdlp_base() + ["--no-playlist", "--print", "%(title)s", url], check=False).stdout.strip()
     log("downloading", vid, info)
+    hl_review.set_live("download", "Stream download ho raha hai", vid=vid, title=clean_title(info) or info, force=True)
     fmt_sel = "bv*[height<=%d]+ba/b[height<=%d]/b" % (MAX_H, MAX_H)
     t0 = time.time()
     sh(ytdlp_base() + ["--no-playlist", "-f", fmt_sel, "--merge-output-format", "mp4", "-o", src, url])
@@ -682,6 +692,7 @@ def run_vid(vid, target_min=None):
     res = process(src, out, {"title": info, "vid": vid})
     os.remove(src)
     # ---- full quality -> DRAFT release (visible only to repo writers = you)
+    hl_review.set_live("release", "Full-quality files GitHub release pe upload ho rahe hain", force=True)
     tag = "hl-" + vid
     for r in gh_releases():
         if r["tag_name"] == tag:
@@ -691,6 +702,7 @@ def run_vid(vid, target_min=None):
         "--title", "Highlights %s" % clean_title(info), "--notes-file", os.path.join(out, "report.txt")] + files)
     note("draft release created: %s (%d files)" % (tag, len(files)))
     # ---- previews (public, low-res) + dashboard state
+    hl_review.set_live("preview", "Dashboard ke liye preview bana raha hai", force=True)
     hl_review.publish_match(vid, clean_title(info) or info, out, res)
     note("previews + dashboard state updated")
     # ---- housekeeping: free assets of old full releases (keeps the shell so the video is not re-processed)
@@ -709,11 +721,13 @@ def cmd_run():
         hl_review.apply_commands(sys.modules[__name__])
         n = hl_review.upload_approved()
         note("uploads done: %d" % n)
+        hl_review.set_live("done", "Commands apply + %d upload complete" % n, force=True)
         return
     vid = os.environ.get("VID", "").strip()
     if not vid:
         return log("no VID")
     run_vid(vid)
+    hl_review.set_live("done", "Highlights + shorts ready — dashboard me Approve karo", force=True)
 
 
 def main():
@@ -736,4 +750,6 @@ if __name__ == "__main__":
     except Exception as e:                      # noqa
         import traceback
         note(("%s\n%s" % (e, traceback.format_exc()[-1200:])), "error", "hl failed")
+        if (sys.argv[1] if len(sys.argv) > 1 else "") == "run":
+            hl_review.set_live("error", str(e)[:180], force=True)
         sys.exit(1)

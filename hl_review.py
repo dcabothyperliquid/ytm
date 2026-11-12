@@ -85,6 +85,42 @@ def save_state(mutator, msg="hl state"):
     raise RuntimeError("hl_state write failed")
 
 
+# ---------------------------------------------------------------- live status (hl_live.json)
+# Separate small file so frequent progress writes never collide with hl_state's read-modify-write.
+LIVE = "hl_live.json"
+_L = {"sha": None, "phase": None, "last": 0.0, "started": 0.0}
+
+
+def set_live(phase, detail="", vid="", title="", cur=None, total=None, force=False):
+    """Dashboard 'kya ho raha hai' feed. phase: waiting_vod|download|audio|transcribe|stories|cut|shorts|release|preview|
+    applying|uploading|done|idle|error. Throttled (same phase: max 1 write / 25s). Never raises."""
+    try:
+        now = time.time()
+        if not force and phase == _L["phase"] and now - _L["last"] < 25:
+            return
+        if phase not in ("idle", "done", "error") and not _L["started"]:
+            _L["started"] = now
+        obj = {"phase": phase, "detail": str(detail)[:200], "vid": vid or _L.get("vid", ""),
+               "title": str(title or _L.get("title", ""))[:120], "cur": cur, "total": total,
+               "run_id": os.environ.get("GITHUB_RUN_ID", ""), "started": int(_L["started"] or now),
+               "at": int(now)}
+        _L["vid"], _L["title"] = obj["vid"], obj["title"]
+        for attempt in range(2):
+            try:
+                if _L["sha"] is None or attempt:
+                    _L["sha"] = (read_file(LIVE)[1])
+                _L["sha"] = write_file(LIVE, obj, _L["sha"], "hl live %s" % phase)
+                break
+            except Exception as e:                   # noqa
+                _L["sha"] = None
+                log("live write retry:", e)
+        _L["phase"], _L["last"] = phase, now
+        if phase in ("idle", "done", "error"):
+            _L["started"] = 0.0
+    except Exception as e:                           # noqa -- status must never break a run
+        log("set_live failed:", e)
+
+
 # ---------------------------------------------------------------- releases / assets
 def release_id(tag):
     r = sh(["gh", "api", "repos/%s/releases" % repo(), "--paginate", "-q",
@@ -242,8 +278,10 @@ def do_edit(H, c):
 
 def apply_commands(H):
     n = 0
-    for c in pending_commands():
+    cmds = pending_commands()
+    for c in cmds:
         n += 1
+        set_live("applying", "%s command" % c.get("type"), vid=c.get("vid", ""), cur=n, total=len(cmds), force=True)
         try:
             H.note("applying %s on %s" % (c.get("type"), c.get("vid")))
             if c["type"] == "edit":
@@ -327,7 +365,8 @@ def upload_approved():
     log("approved & not uploaded yet:", len(todo))
     os.makedirs("/tmp/hlup", exist_ok=True)
     done = 0
-    for m, sid, it in todo:
+    for _i, (m, sid, it) in enumerate(todo, 1):
+        set_live("uploading", "YouTube upload: %s" % sid, vid=m["vid"], title=m.get("title", ""), cur=_i, total=len(todo), force=True)
         path = os.path.join("/tmp/hlup", it["file"])
         try:
             _download_asset(m["release_id"], it["file"], path)
