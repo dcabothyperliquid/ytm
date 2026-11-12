@@ -225,16 +225,21 @@ def scout_vid(H, vid, title="", dur_hint=None):
     finally:
         if os.path.exists(wav):
             os.remove(wav)
-    finished = bool(start is not None and end and end_info["finished"] and chase >= 1)
+    toss_ok = start is not None and why_s.startswith("toss")
+    res_ok = bool(end and end_info["finished"])
+    # RULE: highlights only for a match we have from the toss to the winning run. A 4-5 min hole in the middle is fine.
+    finished = bool(toss_ok and res_ok and chase >= 1)
     status = "pending" if finished else "incomplete"
     if start is None or not end:
         reason = "Match ka start/finish detect nahi hua — time khud daalo ya skip karo"
-    elif not end_info["finished"]:
-        reason = "Result/finish nahi mila — match poora nahi laga (stream beech me kat gaya ho sakta hai)"
+    elif not toss_ok:
+        reason = "Toss nahi mila (stream toss ke baad shuru hua ho sakta hai) — pura match available nahi"
+    elif not res_ok:
+        reason = "Winning run / result nahi mila — match poora nahi laga (stream beech me kat gaya ho sakta hai)"
     elif not chase:
-        reason = "Result mila par 2nd innings ke signs nahi — pakka check karo"
+        reason = "Toss + result mila par 2nd innings ke signs nahi — pakka check karo"
     else:
-        reason = "Match poora laga (2nd innings + result mila)"
+        reason = "Pura match laga: toss se winning run tak (beech ke 4-5 min miss ho to chalega)"
     entry = {"vid": vid, "title": H.clean_title(title) or title or vid, "vod_min": round(dur / 60.0, 1),
              "found": int(time.time()), "status": status, "start": round(start, 1) if start is not None else None,
              "end": round(end, 1) if end else None, "finished": finished, "reason": reason, "evidence": ev[:8]}
