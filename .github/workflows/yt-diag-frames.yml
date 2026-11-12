@@ -57,15 +57,22 @@ jobs:
           u = subprocess.run(base+["--no-playlist","-f","bv*[height<=720]","-g","https://www.youtube.com/watch?v="+vid],capture_output=True,text=True)
           url = (u.stdout.strip().splitlines() or [""])[0]
           print("url ok" if url else "NO URL: "+u.stderr[-400:])
+          errs=[]
           for t in os.environ["TIMES"].split(","):
               t=t.strip()
               r = subprocess.run(["ffmpeg","-y","-loglevel","error","-ss",t,"-i",url,"-frames:v","1","-q:v","3","out/f_%s.jpg"%t],capture_output=True,text=True)
               print(t, r.returncode, r.stderr[-200:])
+              errs.append([t, r.returncode, r.stderr[-200:]])
+          json.dump({"vid":vid,"info":info,"url_ok":bool(url),"url_err":u.stderr[-300:],"errs":errs},open("out/info.json","w"))
           PY
           ls -la out
-      - name: Publish
+      - name: Publish (ONLY jpg + info.json, never cookies)
         run: |
+          rm -f cookies.txt
+          mkdir -p /tmp/o && cp out/*.jpg out/info.json /tmp/o/ 2>/dev/null || true
+          ls -la /tmp/o
           git config user.name ytm-frames; git config user.email frames@users.noreply.github.com
-          cp -r out /tmp/o
-          git checkout --orphan ytm-frames && git rm -rf . -q && cp /tmp/o/* . && git add -A
+          git checkout --orphan ytm-frames && git rm -rf . -q
+          git clean -fdxq
+          cp /tmp/o/* . && git add *.jpg info.json
           git commit -qm "frames" && git push -f origin ytm-frames
