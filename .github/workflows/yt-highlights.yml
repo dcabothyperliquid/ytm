@@ -1,0 +1,86 @@
+name: YT Highlights + Shorts
+
+# Finished live on YOUR channel -> highlights.mp4 + vertical shorts -> DRAFT release (only you see it).
+# Auto: cron checks for a new ended stream. Manual: Run workflow (optionally a video id/url).
+# Runs on GitHub Actions only (public repo = free minutes). Nothing touches Render.
+
+on:
+  workflow_dispatch:
+    inputs:
+      video:
+        description: "Video ID or URL on your channel (blank = newest unprocessed stream)"
+        required: false
+        default: ""
+      shorts:
+        description: "Number of shorts"
+        required: false
+        default: "8"
+      target_min:
+        description: "Highlights length (minutes)"
+        required: false
+        default: "10"
+      model:
+        description: "Whisper model (tiny/base/small)"
+        required: false
+        default: "small"
+  schedule:
+    - cron: "25 */2 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: yt-highlights
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  HL_CHANNEL: ${{ vars.HL_CHANNEL || 'localmatchlive' }}
+  HL_VIDEO: ${{ github.event.inputs.video || '' }}
+  HL_SHORTS: ${{ github.event.inputs.shorts || '8' }}
+  HL_TARGET_MIN: ${{ github.event.inputs.target_min || '10' }}
+  HL_MODEL: ${{ github.event.inputs.model || 'small' }}
+  HL_LANG: ${{ vars.HL_LANG || 'hi' }}
+  YT_COOKIES: ${{ secrets.YT_COOKIES }}
+
+jobs:
+  highlights:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Gate (cheap) - is there a new ended stream?
+        id: gate
+        run: |
+          pip install -q "yt-dlp[default]"
+          python hl_runner.py cookies
+          python hl_runner.py gate
+
+      - name: Install ffmpeg + python deps
+        if: steps.gate.outputs.go == 'true'
+        timeout-minutes: 15
+        run: |
+          for i in 1 2 3; do
+            timeout 240 sudo apt-get update -qq && timeout 300 sudo apt-get install -y -qq ffmpeg && break
+            echo "apt retry $i"; sleep 5
+          done
+          pip install -q numpy faster-whisper
+          command -v ffmpeg; node --version
+
+      - name: Cache whisper model
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: whisper-${{ env.HL_MODEL }}-v1
+
+      - name: Make highlights + shorts, publish draft release
+        if: steps.gate.outputs.go == 'true'
+        env:
+          VID: ${{ steps.gate.outputs.vid }}
+        run: python hl_runner.py run
