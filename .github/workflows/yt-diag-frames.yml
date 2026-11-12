@@ -54,16 +54,21 @@ jobs:
                       except ValueError: pass
           json.dump({"vid":vid,"info":info,"yt_stdout":""},open("out/info.json","w"))
           print("VID",vid,info)
-          u = subprocess.run(base+["--no-playlist","-f","bv*[height<=720]","-g","https://www.youtube.com/watch?v="+vid],capture_output=True,text=True)
-          url = (u.stdout.strip().splitlines() or [""])[0]
-          print("url ok" if url else "NO URL: "+u.stderr[-400:])
+          url = "https://www.youtube.com/watch?v="+vid
           errs=[]
           for t in os.environ["TIMES"].split(","):
-              t=t.strip()
-              r = subprocess.run(["ffmpeg","-y","-loglevel","error","-ss",t,"-i",url,"-frames:v","1","-q:v","3","out/f_%s.jpg"%t],capture_output=True,text=True)
-              print(t, r.returncode, r.stderr[-200:])
-              errs.append([t, r.returncode, r.stderr[-200:]])
-          json.dump({"vid":vid,"info":info,"url_ok":bool(url),"url_err":u.stderr[-300:],"errs":errs},open("out/info.json","w"))
+              t=t.strip(); a=float(t)
+              for f in os.listdir("."):
+                  if f.startswith("clip."): os.remove(f)
+              r = subprocess.run(base+["--no-playlist","-f","bv*[height<=720]","--download-sections","*%d-%d"%(a,a+4),"-o","clip.%(ext)s",url],capture_output=True,text=True)
+              clip = next((f for f in os.listdir(".") if f.startswith("clip.")),None)
+              if clip:
+                  r2 = subprocess.run(["ffmpeg","-y","-loglevel","error","-ss","2","-i",clip,"-frames:v","1","-q:v","3","out/f_%s.jpg"%t],capture_output=True,text=True)
+                  errs.append([t,"ok" if r2.returncode==0 else r2.stderr[-150:]])
+              else:
+                  errs.append([t,"dl fail",(r.stderr or r.stdout)[-250:]])
+              print(errs[-1])
+          json.dump({"vid":vid,"info":info,"errs":errs},open("out/info.json","w"))
           PY
           ls -la out
       - name: Publish (ONLY jpg + info.json, never cookies)
