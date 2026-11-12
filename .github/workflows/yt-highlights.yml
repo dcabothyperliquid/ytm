@@ -81,6 +81,17 @@ jobs:
 
       - name: Make highlights + shorts, publish draft release
         if: steps.gate.outputs.go == 'true'
+        shell: bash
         env:
           VID: ${{ steps.gate.outputs.vid }}
-        run: python hl_runner.py run
+        run: python -u hl_runner.py run 2>&1 | tee hl_run.log
+
+      - name: Push run log to branch hl-log (so failures can be read)
+        if: always() && steps.gate.outputs.go == 'true'
+        run: |
+          mkdir -p /tmp/hlog && cp hl_run.log /tmp/hlog/ 2>/dev/null || echo "no log" > /tmp/hlog/hl_run.log
+          df -h / > /tmp/hlog/df.txt 2>&1 || true
+          cd /tmp/hlog && git init -q && git checkout -q -b hl-log
+          git config user.name hl-bot && git config user.email hl-bot@users.noreply.github.com
+          git add -A && git commit -q -m "hl log ${{ github.run_id }}"
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" hl-log

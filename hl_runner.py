@@ -58,8 +58,11 @@ def sh(cmd, check=True, **kw):
     return r
 
 
+_T0 = time.time()
+
+
 def log(*a):
-    print("[hl]", *a, flush=True)
+    print("[hl +%4ds]" % (time.time() - _T0), *a, flush=True)
 
 
 def note(msg, level="notice", title="hl"):
