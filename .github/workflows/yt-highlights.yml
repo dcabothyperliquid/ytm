@@ -23,6 +23,10 @@ on:
         description: "Whisper model (tiny/base/small)"
         required: false
         default: "small"
+      mode:
+        description: "run = process a stream, apply = apply dashboard edit/re-make commands"
+        required: false
+        default: "run"
   schedule:
     - cron: "25 */2 * * *"
 
@@ -40,6 +44,7 @@ env:
   HL_SHORTS: ${{ github.event.inputs.shorts || '8' }}
   HL_TARGET_MIN: ${{ github.event.inputs.target_min || '10' }}
   HL_MODEL: ${{ github.event.inputs.model || 'small' }}
+  HL_MODE: ${{ github.event.inputs.mode || '' }}
   HL_LANG: ${{ vars.HL_LANG || 'hi' }}
   YT_COOKIES: ${{ secrets.YT_COOKIES }}
 
@@ -84,6 +89,7 @@ jobs:
         shell: bash
         env:
           VID: ${{ steps.gate.outputs.vid }}
+          MODE: ${{ steps.gate.outputs.mode }}
         run: python -u hl_runner.py run 2>&1 | tee hl_run.log
 
       - name: Push run log to branch hl-log (so failures can be read)

@@ -19,6 +19,8 @@ import subprocess
 import sys
 import time
 
+import hl_review
+
 # ---------------------------------------------------------------- config (env)
 CHANNEL = os.environ.get("HL_CHANNEL", "localmatchlive").lstrip("@")
 MIN_MIN = float(os.environ.get("HL_MIN_MIN", "20"))          # ignore streams shorter than this (minutes)
@@ -124,14 +126,20 @@ def cmd_cookies():
 
 
 def cmd_gate():
-    """Pick the video to process. Sets outputs go / vid. Cheap (no ffmpeg)."""
+    """Decide what to do. Outputs: go, mode (run|apply), vid. Cheap (no ffmpeg)."""
     manual = os.environ.get("HL_VIDEO", "").strip()
+    if os.environ.get("HL_MODE", "") == "apply" or (not manual and hl_review.pending_commands()):
+        note("pending dashboard commands -> apply mode")
+        return out_gh(go="true", mode="apply", vid="")
     if manual:
         m = re.search(r"(?:v=|youtu\.be/|/live/|/shorts/)([0-9A-Za-z_-]{11})", manual) or re.match(r"^([0-9A-Za-z_-]{11})$", manual)
         if not m:
             log("manual video id/url not understood:", manual)
             return out_gh(go="false", vid="")
-        return out_gh(go="true", vid=m.group(1))
+        return out_gh(go="true", mode="run", vid=m.group(1))
+    if not hl_review.load_cfg().get("auto", True):
+        log("auto OFF in dashboard config")
+        return out_gh(go="false", vid="")
     done = {r["tag_name"] for r in gh_releases()}
     cands = []
     for tab in ("streams", "videos"):
@@ -158,7 +166,7 @@ def cmd_gate():
         return out_gh(go="false", vid="")
     log("candidates:", cands)
     note("picked %s | %.0f min | %s" % (cands[0][0], cands[0][2] / 60, cands[0][1][:80]))
-    out_gh(go="true", vid=cands[0][0])
+    out_gh(go="true", mode="run", vid=cands[0][0])
 
 
 # ---------------------------------------------------------------- analysis
@@ -403,15 +411,29 @@ def process(src, outdir, meta):
     json.dump(ranked, open(os.path.join(outdir, "moments.json"), "w"), ensure_ascii=False, indent=1)
     log("done: highlights %s + %d shorts" % (fmt(total), len(shorts)))
     note("rendered: highlights %s + %d shorts" % (fmt(total), len(shorts)))
+    out_shorts = []
+    for name, m, s_, e_ in shorts:
+        lab = EVENTS[m["event"]][2] if m["event"] in EVENTS else "BIG MOMENT"
+        tg = EVENTS[m["event"]][3] if m["event"] in EVENTS else ""
+        out_shorts.append({"id": name[:-4], "file": name, "event": m["event"], "score": m["score"],
+                           "start": round(s_, 1), "end": round(e_, 1), "heard": m["text"][:140],
+                           "title": ("%s %s | %s #shorts %s" % (EMOJI.get(m["event"], "⚡"), lab.title(), mt, tg)).strip()})
+    return {"dur": dur, "ranked": ranked,
+            "highlight": {"file": "highlights.mp4", "dur": round(total), "chapters": [[round(ct), ev] for ct, ev, at in chapters]},
+            "shorts": out_shorts}
 
 
 # ---------------------------------------------------------------- run (CI)
-def cmd_run():
-    vid = os.environ.get("VID", "").strip()
-    if not vid:
-        return log("no VID")
+def run_vid(vid, target_min=None):
+    global TARGET_MIN, N_SHORTS
+    cfg = hl_review.load_cfg()
+    N_SHORTS = min(14, max(6, 2 * int(cfg.get("daily_shorts", 5))))    # candidates; the dashboard picks the best N per day
+    if target_min:
+        TARGET_MIN = float(target_min)
     os.makedirs(WORK, exist_ok=True)
     src = os.path.join(WORK, "src.mp4")
+    if os.path.exists(src):
+        os.remove(src)
     url = "https://www.youtube.com/watch?v=" + vid
     info = sh(ytdlp_base() + ["--no-playlist", "--print", "%(title)s", url], check=False).stdout.strip()
     log("downloading", vid, info)
@@ -419,10 +441,10 @@ def cmd_run():
     t0 = time.time()
     sh(ytdlp_base() + ["--no-playlist", "-f", fmt_sel, "--merge-output-format", "mp4", "-o", src, url])
     note("downloaded %s: %.0f MB in %.0fs" % (vid, os.path.getsize(src) / 1e6, time.time() - t0))
-    out = os.path.join(WORK, "out")
-    process(src, out, {"title": info, "vid": vid})
+    out = os.path.join(WORK, "out_" + vid)
+    res = process(src, out, {"title": info, "vid": vid})
     os.remove(src)
-    # ---- publish as DRAFT release (visible only to repo writers = you)
+    # ---- full quality -> DRAFT release (visible only to repo writers = you)
     tag = "hl-" + vid
     for r in gh_releases():
         if r["tag_name"] == tag:
@@ -430,15 +452,29 @@ def cmd_run():
     files = sorted(glob.glob(os.path.join(out, "*.mp4"))) + [os.path.join(out, "report.txt"), os.path.join(out, "moments.json")]
     sh(["gh", "release", "create", tag, "-R", repo(), "--draft", "--target", "main",
         "--title", "Highlights %s" % clean_title(info), "--notes-file", os.path.join(out, "report.txt")] + files)
-    log("draft release created:", tag)
     note("draft release created: %s (%d files)" % (tag, len(files)))
-    # ---- housekeeping: free assets of old releases (keeps the shell so the video is not re-processed)
+    # ---- previews (public, low-res) + dashboard state
+    hl_review.publish_match(vid, clean_title(info) or info, out, res)
+    note("previews + dashboard state updated")
+    # ---- housekeeping: free assets of old full releases (keeps the shell so the video is not re-processed)
     cutoff = time.time() - KEEP_DAYS * 86400
     for r in gh_releases():
         ts = time.mktime(time.strptime(r["created_at"], "%Y-%m-%dT%H:%M:%SZ"))
         if ts < cutoff:
             for aid in r["assets"]:
                 sh(["gh", "api", "-X", "DELETE", "repos/%s/releases/assets/%s" % (repo(), aid)], check=False)
+    hl_review.cleanup_old()
+    sh(["rm", "-rf", out], check=False)
+
+
+def cmd_run():
+    if os.environ.get("MODE", "run") == "apply":
+        hl_review.apply_commands(sys.modules[__name__])
+        return
+    vid = os.environ.get("VID", "").strip()
+    if not vid:
+        return log("no VID")
+    run_vid(vid)
 
 
 def main():
