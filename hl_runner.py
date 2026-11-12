@@ -62,6 +62,12 @@ def log(*a):
     print("[hl]", *a, flush=True)
 
 
+def note(msg, level="notice", title="hl"):
+    """GitHub annotation (readable through the API even when raw logs are not)."""
+    m = str(msg).replace("%", "%25").replace("\r", "").replace("\n", "%0A")[:1800]
+    print("::%s title=%s::%s" % (level, title, m), flush=True)
+
+
 def out_gh(**kv):
     p = os.environ.get("GITHUB_OUTPUT")
     if p:
@@ -148,6 +154,7 @@ def cmd_gate():
         log("nothing new on @%s" % CHANNEL)
         return out_gh(go="false", vid="")
     log("candidates:", cands)
+    note("picked %s | %.0f min | %s" % (cands[0][0], cands[0][2] / 60, cands[0][1][:80]))
     out_gh(go="true", vid=cands[0][0])
 
 
@@ -213,6 +220,7 @@ def find_moments(db, dur):
                         "start": max(0.0, round(start, 1)), "end": min(dur, round(end, 1)),
                         "event": "moment", "text": "", "kw": 0.0})
     log("audio peaks: %d (threshold %.1f dB over baseline)" % (len(moments), thr))
+    note("audio peaks %d (thr %.1f dB)" % (len(moments), thr))
     return moments
 
 
@@ -258,6 +266,7 @@ def transcribe_moments(moments, wav):
         m["event"], m["kw"] = classify(m["text"])
         if (i + 1) % 10 == 0:
             log("transcribed %d/%d (%.0fs)" % (i + 1, len(moments), time.time() - t0))
+    note("whisper %s done: %d windows in %.0fs" % (MODEL, len(moments), time.time() - t0))
 
 
 def score(m):
@@ -315,6 +324,7 @@ def process(src, outdir, meta):
     os.makedirs(outdir, exist_ok=True)
     dur = duration_of(src)
     log("source %.1f min" % (dur / 60))
+    note("source %.1f min" % (dur / 60))
     wav = os.path.join(os.path.dirname(os.path.abspath(outdir)), "audio.s16")
     sh(["ffmpeg", "-y", "-loglevel", "error", "-i", src, "-vn", "-ac", "1", "-ar", str(SR), "-f", "s16le", wav])
     moments = find_moments(energy_track(wav), dur)
@@ -387,6 +397,7 @@ def process(src, outdir, meta):
     open(os.path.join(outdir, "report.txt"), "w").write("\n".join(L) + "\n")
     json.dump(ranked, open(os.path.join(outdir, "moments.json"), "w"), ensure_ascii=False, indent=1)
     log("done: highlights %s + %d shorts" % (fmt(total), len(shorts)))
+    note("rendered: highlights %s + %d shorts" % (fmt(total), len(shorts)))
 
 
 # ---------------------------------------------------------------- run (CI)
@@ -400,7 +411,9 @@ def cmd_run():
     info = sh(ytdlp_base() + ["--no-playlist", "--print", "%(title)s", url], check=False).stdout.strip()
     log("downloading", vid, info)
     fmt_sel = "bv*[height<=%d]+ba/b[height<=%d]/b" % (MAX_H, MAX_H)
+    t0 = time.time()
     sh(ytdlp_base() + ["--no-playlist", "-f", fmt_sel, "--merge-output-format", "mp4", "-o", src, url])
+    note("downloaded %s: %.0f MB in %.0fs" % (vid, os.path.getsize(src) / 1e6, time.time() - t0))
     out = os.path.join(WORK, "out")
     process(src, out, {"title": info, "vid": vid})
     os.remove(src)
@@ -413,6 +426,7 @@ def cmd_run():
     sh(["gh", "release", "create", tag, "-R", repo(), "--draft", "--target", "main",
         "--title", "Highlights %s" % clean_title(info), "--notes-file", os.path.join(out, "report.txt")] + files)
     log("draft release created:", tag)
+    note("draft release created: %s (%d files)" % (tag, len(files)))
     # ---- housekeeping: free assets of old releases (keeps the shell so the video is not re-processed)
     cutoff = time.time() - KEEP_DAYS * 86400
     for r in gh_releases():
@@ -422,7 +436,7 @@ def cmd_run():
                 sh(["gh", "api", "-X", "DELETE", "repos/%s/releases/assets/%s" % (repo(), aid)], check=False)
 
 
-if __name__ == "__main__":
+def main():
     c = sys.argv[1] if len(sys.argv) > 1 else ""
     if c == "gate":
         cmd_gate()
@@ -434,3 +448,12 @@ if __name__ == "__main__":
         process(sys.argv[2], sys.argv[3], {"title": "Local test", "vid": "local"})
     else:
         print(__doc__)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:                      # noqa
+        import traceback
+        note(("%s\n%s" % (e, traceback.format_exc()[-1200:])), "error", "hl failed")
+        sys.exit(1)
