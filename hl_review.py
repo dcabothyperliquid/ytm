@@ -164,7 +164,7 @@ def match_score(ranked):
     return round(0.7 * sum(top[:3]) / min(3, len(top)) + 0.3 * min(strong / 10.0, 1.0), 3)
 
 
-def publish_match(vid, title, outdir, res, tag_full="hl-"):
+def publish_match(vid, title, outdir, res, tag_full="hl-", window=None):
     """res = hl_runner.process() result. Creates the public preview release, then records the match in hl_state."""
     prev = os.path.join(outdir, "_prev")
     os.makedirs(prev, exist_ok=True)
@@ -184,7 +184,7 @@ def publish_match(vid, title, outdir, res, tag_full="hl-"):
     now = int(time.time())
     entry = {"vid": vid, "title": title, "processed": now, "day": time.strftime("%Y-%m-%d", time.gmtime(now + IST)),
              "dur_min": round(res["dur"] / 60.0, 1), "score": match_score(res["ranked"]),
-             "finish": res.get("finish", 0.0),
+             "finish": res.get("finish", 0.0), "window": list(window) if window else None,
              "release_id": release_id(tag_full + vid), "prev_release_id": release_id(tag),
              "highlight": {"file": res["highlight"]["file"], "dur": res["highlight"]["dur"],
                            "chapters": res["highlight"]["chapters"],
@@ -276,6 +276,30 @@ def do_edit(H, c):
             os.remove(f)
 
 
+
+def _scout_status(vid, status, **extra):
+    def mut(st):
+        for sc in st.get("scouts", []):
+            if sc["vid"] == vid:
+                sc["status"] = status
+                sc.update(extra)
+    save_state(mut, "hl scout %s %s" % (vid, status))
+
+
+def do_confirm(H, c):
+    """Dashboard confirmed (and maybe corrected) the match window -> NOW make highlights, only from [start, end]."""
+    start, end = float(c["start"]), float(c["end"])
+    if end - start < 10 * 60:
+        raise RuntimeError("match window bahut chhota (%d s) — start/end check karo" % (end - start))
+    _scout_status(c["vid"], "making", start=round(start, 1), end=round(end, 1), confirmed=int(time.time()))
+    try:
+        H.run_vid(c["vid"], window=(start, end))
+    except Exception:
+        _scout_status(c["vid"], "pending")          # back to pending so it can be retried from the dashboard
+        raise
+    _scout_status(c["vid"], "done")
+
+
 def apply_commands(H):
     n = 0
     cmds = pending_commands()
@@ -287,7 +311,17 @@ def apply_commands(H):
             if c["type"] == "edit":
                 do_edit(H, c)
             elif c["type"] == "rerun":
-                H.run_vid(c["vid"], float(c.get("target_min") or H.TARGET_MIN))
+                m = next((x for x in load_state()[0]["matches"] if x["vid"] == c["vid"]), None)
+                H.run_vid(c["vid"], float(c.get("target_min") or H.TARGET_MIN), window=(m or {}).get("window"))
+            elif c["type"] == "confirm":
+                do_confirm(H, c)
+            elif c["type"] == "skip":
+                _scout_status(c["vid"], "skipped")
+            elif c["type"] == "rescout":
+                _scout_status(c["vid"], "rescouting")
+                import hl_scout
+                hl_scout.scout_vid(H, c["vid"], H.sh(H.ytdlp_base() + ["--no-playlist", "--print", "%(title)s",
+                                                                      "https://www.youtube.com/watch?v=" + c["vid"]], check=False).stdout.strip())
             else:
                 raise RuntimeError("unknown command %s" % c.get("type"))
             _mark(c["id"])

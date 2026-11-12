@@ -20,6 +20,7 @@ import sys
 import time
 
 import hl_review
+import hl_scout
 
 # ---------------------------------------------------------------- config (env)
 CHANNEL = os.environ.get("HL_CHANNEL", "localmatchlive").lstrip("@")
@@ -138,6 +139,7 @@ def cmd_cookies():
 def find_candidates():
     """Ended, long-enough, not-yet-processed videos on our channel (newest first)."""
     done = {r["tag_name"] for r in gh_releases()}
+    scouted = hl_scout.scout_vids()                 # already scouted (pending / confirmed / skipped): never auto-scout twice
     cands = []
     for tab in ("streams", "videos"):
         r = sh(ytdlp_base() + ["--flat-playlist", "--playlist-end", "15", "--print",
@@ -154,7 +156,7 @@ def find_candidates():
                 dur = float(dur)
             except ValueError:
                 continue                      # unknown duration (still processing)
-            if dur < MIN_MIN * 60 or SKIP_TITLE.search(title) or "hl-" + vid in done:
+            if dur < MIN_MIN * 60 or SKIP_TITLE.search(title) or "hl-" + vid in done or vid in scouted:
                 continue
             if all(c[0] != vid for c in cands):
                 cands.append((vid, title, dur))
@@ -172,8 +174,8 @@ def cmd_gate():
         if not m:
             log("manual video id/url not understood:", manual)
             return out_gh(go="false", vid="")
-        hl_review.set_live("queued", "Manual run shuru ho raha hai", vid=m.group(1), force=True)
-        return out_gh(go="true", mode="run", vid=m.group(1))
+        hl_review.set_live("queued", "Manual scout shuru ho raha hai (pehle match ka time nikalega)", vid=m.group(1), force=True)
+        return out_gh(go="true", mode="scout", vid=m.group(1))
     if not hl_review.load_cfg().get("auto", True):
         log("auto OFF in dashboard config")
         return out_gh(go="false", vid="")
@@ -193,8 +195,8 @@ def cmd_gate():
         return out_gh(go="false", vid="")
     log("candidates:", cands)
     note("picked %s | %.0f min | %s" % (cands[0][0], cands[0][2] / 60, cands[0][1][:80]))
-    hl_review.set_live("queued", "Naya stream mila (%.0f min) — worker tayyar ho raha hai" % (cands[0][2] / 60), vid=cands[0][0], title=clean_title(cands[0][1]), force=True)
-    out_gh(go="true", mode="run", vid=cands[0][0])
+    hl_review.set_live("queued", "Naya stream mila (%.0f min) — pehle match ka start/finish dhoondhega" % (cands[0][2] / 60), vid=cands[0][0], title=clean_title(cands[0][1]), force=True)
+    out_gh(go="true", mode="scout", vid=cands[0][0])
 
 
 # ---------------------------------------------------------------- analysis
@@ -550,7 +552,8 @@ def clean_title(t):
     return re.sub(r"\s+", " ", t).strip(" |-")[:70]
 
 
-def process(src, outdir, meta):
+def process(src, outdir, meta, offset=0.0):
+    """offset = where src starts inside the original VOD (confirmed match window) -> all stored/reported times are VOD times."""
     os.makedirs(outdir, exist_ok=True)
     dur = duration_of(src)
     log("source %.1f min" % (dur / 60))
@@ -648,13 +651,14 @@ def process(src, outdir, meta):
     for name, m, s, e in shorts:
         lab = m.get("label") or "BIG MOMENT"
         tag = _ev_tag(m["event"])
-        L.append("%s | src %s-%s | score %.2f | audio +%.0fdB" % (name, fmt(s), fmt(e), m["score"], m["db"]))
+        L.append("%s | src %s-%s | score %.2f | audio +%.0fdB" % (name, fmt(s + offset), fmt(e + offset), m["score"], m["db"]))
         L.append("  title: %s %s | %s #shorts %s" % (EMOJI.get(m["event"], "⚡"), lab.title(), mt, tag))
         if m["text"]:
             L.append("  heard: %s" % m["text"][:140])
     L += ["", "Note: shorts = story-based (over compilation / hat-trick / catch drop / last over); needs keywords in commentary. Always check before upload."]
     open(os.path.join(outdir, "report.txt"), "w").write("\n".join(L) + "\n")
-    json.dump(ranked, open(os.path.join(outdir, "moments.json"), "w"), ensure_ascii=False, indent=1)
+    json.dump([dict(m, start=m["start"] + offset, end=m["end"] + offset) for m in ranked],
+              open(os.path.join(outdir, "moments.json"), "w"), ensure_ascii=False, indent=1)
     log("done: highlights %s + %d shorts" % (fmt(total), len(shorts)))
     note("rendered: highlights %s + %d shorts" % (fmt(total), len(shorts)))
     out_shorts = []
@@ -662,7 +666,7 @@ def process(src, outdir, meta):
         lab = m.get("label") or "BIG MOMENT"
         tg = _ev_tag(m["event"])
         out_shorts.append({"id": name[:-4], "file": name, "event": m["event"], "score": m["score"],
-                           "start": round(s_, 1), "end": round(e_, 1), "heard": m["text"][:140],
+                           "start": round(s_ + offset, 1), "end": round(e_ + offset, 1), "heard": m["text"][:140],
                            "label": lab, "title": ("%s %s | %s #shorts %s" % (EMOJI.get(m["event"], "⚡"), lab.title().rstrip("!"), mt, tg)).strip()})
     return {"dur": dur, "ranked": ranked, "finish": finish,
             "highlight": {"file": "highlights.mp4", "dur": round(total), "chapters": [[round(ct), ev] for ct, ev, at in chapters]},
@@ -670,7 +674,8 @@ def process(src, outdir, meta):
 
 
 # ---------------------------------------------------------------- run (CI)
-def run_vid(vid, target_min=None):
+def run_vid(vid, target_min=None, window=None):
+    """window = (start_s, end_s) confirmed on the dashboard: only that part of the VOD is downloaded + processed."""
     global TARGET_MIN, N_SHORTS
     cfg = hl_review.load_cfg()
     N_SHORTS = min(14, max(6, 2 * int(cfg.get("daily_shorts", 5))))    # candidates; the dashboard picks the best N per day
@@ -682,14 +687,20 @@ def run_vid(vid, target_min=None):
         os.remove(src)
     url = "https://www.youtube.com/watch?v=" + vid
     info = sh(ytdlp_base() + ["--no-playlist", "--print", "%(title)s", url], check=False).stdout.strip()
-    log("downloading", vid, info)
-    hl_review.set_live("download", "Stream download ho raha hai", vid=vid, title=clean_title(info) or info, force=True)
+    log("downloading", vid, info, "window", window)
+    hl_review.set_live("download", "Confirmed match download ho raha hai (%s - %s)" % (fmt(window[0]), fmt(window[1])) if window else "Stream download ho raha hai",
+                       vid=vid, title=clean_title(info) or info, force=True)
     fmt_sel = "bv*[height<=%d]+ba/b[height<=%d]/b" % (MAX_H, MAX_H)
+    cmd = ytdlp_base() + ["--no-playlist", "-f", fmt_sel, "--merge-output-format", "mp4"]
+    offset = 0.0
+    if window:
+        offset = max(0.0, float(window[0]) - 5.0)
+        cmd += ["--download-sections", "*%.1f-%.1f" % (offset, float(window[1]) + 5.0)]
     t0 = time.time()
-    sh(ytdlp_base() + ["--no-playlist", "-f", fmt_sel, "--merge-output-format", "mp4", "-o", src, url])
+    sh(cmd + ["-o", src, url])
     note("downloaded %s: %.0f MB in %.0fs" % (vid, os.path.getsize(src) / 1e6, time.time() - t0))
     out = os.path.join(WORK, "out_" + vid)
-    res = process(src, out, {"title": info, "vid": vid})
+    res = process(src, out, {"title": info, "vid": vid}, offset=offset)
     os.remove(src)
     # ---- full quality -> DRAFT release (visible only to repo writers = you)
     hl_review.set_live("release", "Full-quality files GitHub release pe upload ho rahe hain", force=True)
@@ -703,7 +714,7 @@ def run_vid(vid, target_min=None):
     note("draft release created: %s (%d files)" % (tag, len(files)))
     # ---- previews (public, low-res) + dashboard state
     hl_review.set_live("preview", "Dashboard ke liye preview bana raha hai", force=True)
-    hl_review.publish_match(vid, clean_title(info) or info, out, res)
+    hl_review.publish_match(vid, clean_title(info) or info, out, res, window=window)
     note("previews + dashboard state updated")
     # ---- housekeeping: free assets of old full releases (keeps the shell so the video is not re-processed)
     cutoff = time.time() - KEEP_DAYS * 86400
@@ -726,6 +737,13 @@ def cmd_run():
     vid = os.environ.get("VID", "").strip()
     if not vid:
         return log("no VID")
+    if os.environ.get("MODE", "run") == "scout":
+        info = sh(ytdlp_base() + ["--no-playlist", "--print", "%(title)s|%(duration)s", "https://www.youtube.com/watch?v=" + vid], check=False).stdout.strip()
+        title, _, dur = info.rpartition("|")
+        e = hl_scout.scout_vid(sys.modules[__name__], vid, title)
+        hl_review.set_live("done", "Match mila (%s - %s) — dashboard me check karke Confirm karo" % (fmt(e["start"] or 0), fmt(e["end"] or 0))
+                           if e["status"] == "pending" else "Scout: %s" % e["reason"], vid=vid, force=True)
+        return
     run_vid(vid)
     hl_review.set_live("done", "Highlights + shorts ready — dashboard me Approve karo", force=True)
 
