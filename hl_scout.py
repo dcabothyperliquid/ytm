@@ -37,6 +37,7 @@ RESULT_RX = re.compile(
 CHASE_RX = re.compile(
     r"\btarget\b|need(?:s|ed)?\s+\d+|require(?:s|d)?\s+\d+|chas(?:e|ing)|second\s+innings|2nd\s+innings|innings\s+break|"
     r"required\s+rate|run\s+rate|टारगेट|लक्ष्य|चेज़?|चेस|दूसरी\s+पारी|इनिंग्स?\s+ब्रेक|रन\s*चाहिए|रन\s*चाहिये", re.I)
+TOSS_RX = re.compile(r"\btoss\b|elected\s+to\s+(?:bat|bowl|field)|chose\s+to\s+(?:bat|bowl|field)|won\s+the\s+toss|टॉस|पहले\s+(?:बल्लेबाज़ी|बैटिंग|गेंदबाज़ी|बॉलिंग)", re.I)
 LASTOVER_RX = re.compile(r"last[\s-]?over|final[\s-]?over|last[\s-]?ball|आखिरी\s*ओवर|आख़िरी\s*ओवर|अंतिम\s*ओवर|आखिरी\s*गेंद", re.I)
 
 
@@ -103,6 +104,28 @@ def find_start(L, dur):
     hi = min(dur - WIN, START_SCAN_MAX)
     ts = [float(t) for t in range(0, int(hi), STEP)]
     hits = []
+    # 1) toss: first window that talks about the toss and is followed by ball-by-ball play within 45 min
+    toss_t = None
+    for i, t in enumerate(ts):
+        hl_review.set_live("scout", "Scout: toss dhoondh raha hai (%s)" % _fmt(t), cur=i + 1, total=len(ts))
+        if TOSS_RX.search(L.text(t)):
+            first_play = None
+            for t2 in range(int(t), int(min(hi, t + 45 * 60)), STEP):
+                if _play_score(L.text(float(t2))) >= 2:
+                    first_play = t2
+                    break
+            if first_play is not None:
+                toss_t = t
+                break
+    if toss_t is not None:
+        back = toss_t
+        for k in range(1, 4):                         # walk back up to 60 s to catch the start of the toss talk
+            if TOSS_RX.search(L.text(max(0.0, toss_t - k * WIN))):
+                back = max(0.0, toss_t - k * WIN)
+            else:
+                break
+        return max(0.0, back - 15.0), "toss ~%s" % _fmt(back)
+    hits = []
     for i, t in enumerate(ts):
         s = _play_score(L.text(t))
         hits.append(s)
@@ -161,10 +184,12 @@ def _find_end(L, dur, span):
         ev.append("'last over' bola gaya")
     if last_play is None:
         return {"end": None, "finished": False, "evidence": ev + ["end ke 75 min me ball-by-ball commentary nahi"]}
-    if result_at is not None:
-        end = min(result_at + 60.0, last_play + 150.0)
-    else:
-        end = last_play + 90.0
+    # fine scan (20 s) around the last coarse play window -> real last ball / winning run
+    last_ball = last_play
+    for t in range(int(last_play), int(min(dur - WIN, last_play + 2 * STEP)), WIN):
+        if _play_score(L.text(float(t))) >= 2:
+            last_ball = float(t)
+    end = last_ball + WIN + 45.0                      # winning run / last wicket + ~45 s celebration
     return {"end": min(end, dur), "finished": result_at is not None, "evidence": ev,
             "last_play": last_play, "result_at": result_at, "lastover": lastover}
 
