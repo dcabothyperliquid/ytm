@@ -50,8 +50,8 @@ EVENTS = {   # name: (regex, weight, label, hashtag)
     "drop": (r"\bdrop(?:ped|s)?\b|butter[\s-]?fingers?|fumble|छोड़ा|छोड़\s*दिया|छूट\s*गया|ड्रॉप|मिस\s*फील्ड|miss(?:ed)?\s+(?:the\s+)?catch", 0.8, "CATCH DROPPED", "#catchdrop"),
 }
 EMOJI = {"finish": "😱", "hattrick": "🔥", "six": "💥", "wicket": "☝️", "milestone": "🎉", "catch": "🙌",
-         "four": "🏏", "ace": "🎾", "moment": "⚡", "drop": "🤦", "sixes": "💥", "wickets": "☝️", "over": "🔥"}
-STORY_TAG = {"sixes": "#sixes", "wickets": "#wickets", "over": "#bigover"}
+         "four": "🏏", "ace": "🎾", "moment": "⚡", "drop": "🤦", "fifty": "5️⃣0️⃣", "sixes": "💥", "wickets": "☝️", "over": "🔥"}
+STORY_TAG = {"fifty": "#fifty", "sixes": "#sixes", "wickets": "#wickets", "over": "#bigover"}
 OVER_GAP = 150          # s: confirmed events closer than this belong to the same over / passage of play
 OVER_SPAN = 420         # s: max length of one story cluster
 PART_MAX = 5            # clips per compilation short
@@ -218,7 +218,7 @@ def energy_track(wav):
     return db
 
 
-def find_moments(db, dur):
+def find_moments(db, dur, lo=0.0, hi=None, sep=30, want=None, quiet=False):
     import numpy as np
     from numpy.lib.stride_tricks import sliding_window_view
     k = 4                                          # 2 s smoothing
@@ -228,7 +228,8 @@ def find_moments(db, dur):
     base = np.median(sliding_window_view(pad, w), axis=1)
     ex = sm - base
     # broadcast audio is heavily compressed -> low floor; candidate count scales with length (~1 per 4 min)
-    want = min(MAX_CAND, max(10, int(dur / 150)))
+    want = want or min(MAX_CAND, max(10, int(dur / 150)))
+    hi = min(dur - 5, hi if hi else dur)
     thr = max(0.7, min(4.0, float(np.percentile(ex, 95))))
     min_fill = min(want, 8)                         # flat/compressed audio: still hand the ranker something to work with
     order = np.argsort(ex)[::-1]
@@ -236,9 +237,9 @@ def find_moments(db, dur):
     for i in order:
         if len(picks) >= want or (ex[i] < thr and len(picks) >= min_fill) or ex[i] <= 0.2:
             break
-        if i * HOP < 15 or i * HOP > dur - 5:
+        if i * HOP < max(15, lo) or i * HOP > hi:
             continue
-        if all(abs(int(i) - j) * HOP >= 30 for j in picks):
+        if all(abs(int(i) - j) * HOP >= sep for j in picks):
             picks.append(int(i))
     top = float(ex[picks[0]]) if picks else 1.0
     moments = []
@@ -258,8 +259,9 @@ def find_moments(db, dur):
         moments.append({"t": round(i * HOP, 1), "audio": round(float(ex[i]) / top, 3), "db": round(float(ex[i]), 1),
                         "start": max(0.0, round(start, 1)), "end": min(dur, round(end, 1)),
                         "event": "moment", "text": "", "kw": 0.0})
-    log("audio peaks: %d (threshold %.1f dB over baseline)" % (len(moments), thr))
-    note("audio peaks %d (thr %.1f dB)" % (len(moments), thr))
+    if not quiet:
+        log("audio peaks: %d (threshold %.1f dB over baseline)" % (len(moments), thr))
+        note("audio peaks %d (thr %.1f dB)" % (len(moments), thr))
     return moments
 
 
@@ -328,6 +330,76 @@ def merge_windows(ms):
     return out
 
 
+FIFTY_RX = r"\bfifty\b|फिफ्टी|अर्धशतक|अर्द्धशतक|half[\s-]?century|पचास|\bpachas\b"
+CENT_RX = r"century|सेंचुरी|(?<!अर्ध)(?<!अर्द्ध)शतक"
+FIFTY_BACK = 1500       # s: how far back from the fifty we look for the start of that innings
+FIFTY_MAX_SHOTS = 15    # compiled shots per fifty short (10 s each + celebration -> < 3 min Shorts limit)
+
+
+def is_fifty(m):
+    t = m.get("text") or ""
+    return bool(re.search(FIFTY_RX, t, re.I)) and not re.search(CENT_RX, t, re.I)
+
+
+def fifty_stories(moments, dur, db, wav):
+    """Fifty -> ONE short with that batsman's whole innings (every six/four from his first ball to the 50).
+    The stream has no player tracking, so the innings start is approximated: the last wicket before the fifty
+    (extended further back to earlier wickets while too few boundaries are found = partner fell earlier).
+    A dense audio scan + whisper over that stretch finds the shots the normal ranking would skip."""
+    fifties = sorted([m for m in moments if m["event"] == "milestone" and is_fifty(m)], key=lambda m: m["t"])
+    uniq = []
+    for m in fifties:
+        if uniq and m["t"] - uniq[-1]["t"] < 150:
+            if score(m) > score(uniq[-1]):
+                uniq[-1] = m
+        else:
+            uniq.append(m)
+    out = []
+    for f in uniq:
+        ft = f["t"]
+        wk = sorted(m["t"] for m in moments if m["event"] == "wicket" and m["t"] < ft - 20)
+        floor_t = max(0.0, ft - FIFTY_BACK)
+        wide = max(floor_t, wk[-2] if len(wk) >= 2 else 0.0)
+        log("fifty at %s: dense scan %s-%s" % (fmt(ft), fmt(wide), fmt(ft)))
+        dense = find_moments(db, dur, lo=wide, hi=ft - 8, sep=12,
+                             want=max(8, int((ft - wide) / 15)), quiet=True)
+        for m in dense:
+            m["start"], m["end"] = max(0.0, m["t"] - 6), min(dur, m["t"] + 5)
+        transcribe_moments(dense, wav)
+        pool = {}
+        for m in dense + [x for x in moments if wide <= x["t"] <= ft - 8]:
+            if m["event"] in ("six", "four") and m["kw"] >= 0.5 and not is_fifty(m):
+                k = round(m["t"] / 7)
+                if k not in pool or m["kw"] > pool[k]["kw"]:
+                    pool[k] = m
+        shots = sorted(pool.values(), key=lambda m: m["t"])
+        lo = (wk[-1] + 5) if wk else 0.0
+        lo = max(lo, floor_t)
+        earlier = [w for w in wk if w + 5 < lo]
+        while sum(1 for m in shots if m["t"] >= lo) < 5 and earlier and lo > wide:
+            lo = max(wide, earlier.pop() + 5)
+        shots = [m for m in shots if m["t"] >= lo]
+        log("fifty %s: innings from %s, %d boundaries" % (fmt(ft), fmt(lo), len(shots)))
+        if len(shots) < 3:
+            continue
+        if len(shots) > FIFTY_MAX_SHOTS:
+            keep = sorted(shots, key=lambda m: (m["event"] == "six", score(m)), reverse=True)[:FIFTY_MAX_SHOTS]
+            shots = sorted(keep, key=lambda m: m["t"])
+        parts = []
+        for a, b in [(m["t"] - 6.0, m["t"] + 4.0) for m in shots] + [(ft - 8.0, min(dur, ft + 8.0))]:
+            a = max(0.0, a)
+            if parts and a <= parts[-1][1] + 1:
+                parts[-1][1] = max(parts[-1][1], b)
+            else:
+                parts.append([a, b])
+        n6 = sum(1 for m in shots if m["event"] == "six")
+        out.append({"event": "fifty", "label": "FIFTY! 0 TO 50", "parts": parts, "start": parts[0][0],
+                    "end": parts[-1][1], "t": ft, "audio": f["audio"], "db": max(m["db"] for m in shots + [f]),
+                    "text": ("%d boundaries (%d sixes) | " % (len(shots), n6) + (f["text"] or ""))[:400],
+                    "score": 2.6, "handled": ft})
+    return out
+
+
 def _ev_tag(ev):
     return EVENTS[ev][3] if ev in EVENTS else STORY_TAG.get(ev, "")
 
@@ -338,7 +410,7 @@ def _part(m, wide=False):
     return [max(0.0, m["t"] - a), m["t"] + b]
 
 
-def build_stories(moments, dur):
+def build_stories(moments, dur, handled=()):
     """A short = a real story, never one random loud shot.
     hat-trick | catch drop | milestone | last-over | 3+ sixes/fours/wickets in one over (compiled)."""
     conf = sorted([m for m in moments if m["event"] != "moment" and m["kw"] >= 0.5], key=lambda m: m["t"])
@@ -365,6 +437,8 @@ def build_stories(moments, dur):
         elif "drop" in ev:
             kind, label, base = "drop", "CATCH DROPPED!", 1.1
         elif "milestone" in ev:
+            if any(m["event"] == "milestone" and any(abs(m["t"] - h) < 150 for h in handled) for m in cl):
+                continue                            # fifty innings short already covers it
             kind, label, base = "milestone", "MILESTONE!", 1.0
         elif len(cl) >= 3 and len(set(ev) & {"six", "four", "wicket"}) >= 2:
             kind, label, base = "over", "BIG OVER!", 1.0 + 0.15 * len(cl)
@@ -479,10 +553,17 @@ def process(src, outdir, meta):
     note("source %.1f min" % (dur / 60))
     wav = os.path.join(os.path.dirname(os.path.abspath(outdir)), "audio.s16")
     sh(["ffmpeg", "-y", "-loglevel", "error", "-i", src, "-vn", "-ac", "1", "-ar", str(SR), "-f", "s16le", wav])
-    moments = find_moments(energy_track(wav), dur)
+    db = energy_track(wav)
+    moments = find_moments(db, dur)
     if not moments:
         raise RuntimeError("no audio peaks found (silent / flat source?)")
     transcribe_moments(moments, wav)
+    try:
+        fifty = fifty_stories(moments, dur, db, wav)
+    except Exception as e:                         # noqa -- never lose the whole run over this
+        log("fifty stories failed:", e)
+        note("fifty stories failed: %s" % e, "warning")
+        fifty = []
     os.remove(wav)
     for m in moments:
         m["score"] = round(score(m), 3)
@@ -520,7 +601,8 @@ def process(src, outdir, meta):
     shorts, used = [], []
     heard_any = any(m["text"] for m in moments)
     if heard_any:
-        cands = build_stories(moments, dur)
+        cands = sorted(fifty + build_stories(moments, dur, [f["handled"] for f in fifty]),
+                       key=lambda x: x["score"], reverse=True)
         log("stories found: %d" % len(cands))
         note("stories found: %d" % len(cands))
     else:                                           # no transcript (whisper off/failed): audio-only fallback
@@ -534,9 +616,10 @@ def process(src, outdir, meta):
         if len(shorts) >= N_SHORTS:
             break
         s, e = m["start"], m["end"]
-        if any(s < u[1] and e > u[0] for u in used):
-            continue
-        used.append((s, e))
+        if m["event"] != "fifty":                   # a fifty innings may share shots with other shorts
+            if any(s < u[1] and e > u[0] for u in used):
+                continue
+            used.append((s, e))
         name = "short_%02d_%s.mp4" % (len(shorts) + 1, m["event"])
         render_story(src, m, os.path.join(outdir, name))
         shorts.append((name, m, s, e))
