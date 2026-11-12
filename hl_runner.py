@@ -687,6 +687,76 @@ def process(src, outdir, meta, offset=0.0):
             "shorts": out_shorts}
 
 
+# ---------------------------------------------------------------- full download + trim (no --download-sections)
+import shutil
+
+FULL_H = 720            # a whole VOD is downloaded -> cap the height so 8 h stays ~3-4 GB on the runner
+
+
+def free_gb():
+    return shutil.disk_usage(".").free / 1e9
+
+
+def kf_before(path, t):
+    """start time of the last video keyframe <= t (so a stream-copy trim begins exactly there)."""
+    a = max(0.0, t - 40.0)
+    r = sh(["ffprobe", "-v", "error", "-select_streams", "v:0", "-read_intervals", "%.2f%%+%.2f" % (a, t - a + 2),
+            "-show_entries", "packet=pts_time,flags", "-of", "csv=p=0", path], check=False)
+    best = None
+    for line in (r.stdout or "").splitlines():
+        p = line.split(",")
+        if len(p) >= 2 and "K" in p[1]:
+            try:
+                x = float(p[0])
+            except ValueError:
+                continue
+            if x <= t + 0.01 and (best is None or x > best):
+                best = x
+    return best if best is not None else max(0.0, t)
+
+
+def ensure_full(vid):
+    """whole VOD (<=720p) in WORK/full_<vid>.mp4, reused by every command of this job. Kept until the post is done."""
+    os.makedirs(WORK, exist_ok=True)
+    path = os.path.join(WORK, "full_%s.mp4" % vid)
+    if os.path.exists(path) and os.path.getsize(path) > 1e6:
+        return path
+    for f in glob.glob(os.path.join(WORK, "full_*.mp4")):        # an older match of this job: its post is finished
+        os.remove(f)
+    log("full download %s (free disk %.1f GB)" % (vid, free_gb()))
+    h = min(MAX_H, FULL_H)
+    sel = "b[height<=%d]/bv*[height<=%d]+ba/b" % (h, h)
+    t0 = time.time()
+    sh(ytdlp_base() + ["--no-playlist", "-f", sel, "--merge-output-format", "mp4", "--concurrent-fragments", "4",
+                       "-o", path, "https://www.youtube.com/watch?v=" + vid])
+    note("full download %s: %.0f MB in %.0fs, free disk %.1f GB" % (vid, os.path.getsize(path) / 1e6, time.time() - t0, free_gb()))
+    return path
+
+
+def trim(full, start, end, out):
+    """stream-copy [start,end] of full -> out. Returns the REAL start (keyframe) so stored times stay exact."""
+    a = kf_before(full, max(0.0, start))
+    sh(["ffmpeg", "-y", "-loglevel", "error", "-ss", "%.3f" % a, "-i", full, "-t", "%.3f" % (end - a),
+        "-c", "copy", "-avoid_negative_ts", "make_zero", "-movflags", "+faststart", out])
+    return a
+
+
+def release_disk():
+    """called ONLY after posting (release upload / YouTube upload) is finished."""
+    n = 0
+    for pat in ("full_*.mp4", "src.mp4", "sec.*", "audio.s16", "scout*", "*.mp4", "out_*"):
+        for f in glob.glob(os.path.join(WORK, pat)):
+            try:
+                if os.path.isdir(f):
+                    shutil.rmtree(f, ignore_errors=True)
+                else:
+                    os.remove(f)
+                n += 1
+            except OSError:
+                pass
+    log("disk released (%d items), free %.1f GB" % (n, free_gb()))
+
+
 # ---------------------------------------------------------------- run (CI)
 def run_vid(vid, target_min=None, window=None):
     """window = (start_s, end_s) confirmed on the dashboard: only that part of the VOD is downloaded + processed."""
@@ -704,18 +774,18 @@ def run_vid(vid, target_min=None, window=None):
     log("downloading", vid, info, "window", window)
     hl_review.set_live("download", "Confirmed match download ho raha hai (%s - %s)" % (fmt(window[0]), fmt(window[1])) if window else "Stream download ho raha hai",
                        vid=vid, title=clean_title(info) or info, force=True)
-    fmt_sel = "bv*[height<=%d]+ba/b[height<=%d]/b" % (MAX_H, MAX_H)
-    cmd = ytdlp_base() + ["--no-playlist", "-f", fmt_sel, "--merge-output-format", "mp4"]
     offset = 0.0
     if window:
-        offset = max(0.0, float(window[0]) - 5.0)
-        cmd += ["--download-sections", "*%.1f-%.1f" % (offset, float(window[1]) + 5.0)]
-    t0 = time.time()
-    sh(cmd + ["-o", src, url])
-    note("downloaded %s: %.0f MB in %.0fs" % (vid, os.path.getsize(src) / 1e6, time.time() - t0))
+        full = ensure_full(vid)
+        offset = trim(full, float(window[0]) - 5.0, float(window[1]) + 5.0, src)
+        note("trimmed %.0f-%.0f s -> %.0f MB (real start %.2f)" % (window[0], window[1], os.path.getsize(src) / 1e6, offset))
+    else:                                                    # no confirmed window (old rerun): whole VOD as before
+        fmt_sel = "bv*[height<=%d]+ba/b[height<=%d]/b" % (MAX_H, MAX_H)
+        t0 = time.time()
+        sh(ytdlp_base() + ["--no-playlist", "-f", fmt_sel, "--merge-output-format", "mp4", "-o", src, url])
+        note("downloaded %s: %.0f MB in %.0fs" % (vid, os.path.getsize(src) / 1e6, time.time() - t0))
     out = os.path.join(WORK, "out_" + vid)
     res = process(src, out, {"title": info, "vid": vid}, offset=offset)
-    os.remove(src)
     # ---- full quality -> DRAFT release (visible only to repo writers = you)
     hl_review.set_live("release", "Full-quality files GitHub release pe upload ho rahe hain", force=True)
     tag = "hl-" + vid
@@ -742,6 +812,13 @@ def run_vid(vid, target_min=None, window=None):
 
 
 def cmd_run():
+    try:
+        _cmd_run()
+    finally:
+        release_disk()          # disk is freed only here = after the post (release upload / YouTube upload) is finished
+
+
+def _cmd_run():
     if os.environ.get("MODE", "run") == "apply":
         hl_review.apply_commands(sys.modules[__name__])
         n = hl_review.upload_approved()

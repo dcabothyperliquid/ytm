@@ -241,16 +241,14 @@ def do_edit(H, c):
         raise RuntimeError("clip too short (min 5s)")
     pad = 3.0
     a = max(0.0, start - pad)
-    url = "https://www.youtube.com/watch?v=" + c["vid"]
     for f in glob.glob(os.path.join(H.WORK, "sec.*")):
         os.remove(f)
     os.makedirs(H.WORK, exist_ok=True)
-    fmt_sel = "bv*[height<=%d]+ba/b[height<=%d]/b" % (H.MAX_H, H.MAX_H)
-    H.sh(H.ytdlp_base() + ["--no-playlist", "-f", fmt_sel, "--merge-output-format", "mp4", "--download-sections",
-                           "*%.1f-%.1f" % (a, end + pad), "-o", os.path.join(H.WORK, "sec.%(ext)s"), url])
-    sec = (glob.glob(os.path.join(H.WORK, "sec.*")) or [None])[0]
-    if not sec:
-        raise RuntimeError("section download failed")
+    full = H.ensure_full(c["vid"])                  # whole VOD once per job (cached), then an exact stream-copy trim
+    sec = os.path.join(H.WORK, "sec.mp4")
+    a = H.trim(full, a, end + pad, sec)             # a = real keyframe start of the trimmed file
+    if not os.path.exists(sec):
+        raise RuntimeError("section trim failed")
     base = s["id"].split("_e")[0]
     nid = "%s_e%d" % (base, c["id"] % 100000)
     out = os.path.join(H.WORK, nid + ".mp4")
