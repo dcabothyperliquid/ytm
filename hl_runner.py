@@ -47,9 +47,15 @@ EVENTS = {   # name: (regex, weight, label, hashtag)
     "four": (r"\bfour\b|चौका|चौके|चौक्का|chauka|boundary|बाउंड्री", 0.5, "FOUR", "#four"),
     "finish": (r"last[\s-]?over|last[\s-]?ball|final[\s-]?over|आखिरी\s*ओवर|आख़िरी\s*ओवर|अंतिम\s*ओवर|आखिरी\s*गेंद|need(?:s|ed)?\s+\d+\s+(?:runs?\s+)?(?:from|off)|\d+\s*(?:रन|runs?)\s*(?:चाहिए|चाहिये|needed|to win)|super[\s-]?over|सुपर\s*ओवर", 0.9, "LAST OVER", "#lastover"),
     "ace": (r"\bace\b|match[\s-]?point|set[\s-]?point|tie[\s-]?break", 0.6, "BIG POINT", "#tennis"),
+    "drop": (r"\bdrop(?:ped|s)?\b|butter[\s-]?fingers?|fumble|छोड़ा|छोड़\s*दिया|छूट\s*गया|ड्रॉप|मिस\s*फील्ड|miss(?:ed)?\s+(?:the\s+)?catch", 0.8, "CATCH DROPPED", "#catchdrop"),
 }
 EMOJI = {"finish": "😱", "hattrick": "🔥", "six": "💥", "wicket": "☝️", "milestone": "🎉", "catch": "🙌",
-         "four": "🏏", "ace": "🎾", "moment": "⚡"}
+         "four": "🏏", "ace": "🎾", "moment": "⚡", "drop": "🤦", "sixes": "💥", "wickets": "☝️", "over": "🔥"}
+STORY_TAG = {"sixes": "#sixes", "wickets": "#wickets", "over": "#bigover"}
+OVER_GAP = 150          # s: confirmed events closer than this belong to the same over / passage of play
+OVER_SPAN = 420         # s: max length of one story cluster
+PART_MAX = 5            # clips per compilation short
+SHORT_MAX = 58.0        # s per short
 WHISPER_HINT = "छक्का चौका विकेट आउट कैच हैट्रिक बोल्ड आखिरी ओवर रन चाहिए six four wicket out catch hat-trick century last over"
 GENERIC = ["CROWD GOES WILD", "WHAT A MOMENT", "BIG MOMENT", "SEE THIS", "UNBELIEVABLE"]
 FONT = next((f for f in ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -322,6 +328,103 @@ def merge_windows(ms):
     return out
 
 
+def _ev_tag(ev):
+    return EVENTS[ev][3] if ev in EVENTS else STORY_TAG.get(ev, "")
+
+
+def _part(m, wide=False):
+    """Clip around the audio peak: build-up + reaction (not the whole 45 s window)."""
+    a, b = (10.0, 9.0) if wide else (6.0, 5.0)
+    return [max(0.0, m["t"] - a), m["t"] + b]
+
+
+def build_stories(moments, dur):
+    """A short = a real story, never one random loud shot.
+    hat-trick | catch drop | milestone | last-over | 3+ sixes/fours/wickets in one over (compiled)."""
+    conf = sorted([m for m in moments if m["event"] != "moment" and m["kw"] >= 0.5], key=lambda m: m["t"])
+    clusters = []
+    for m in conf:
+        if clusters and m["t"] - clusters[-1][-1]["t"] <= OVER_GAP and m["t"] - clusters[-1][0]["t"] <= OVER_SPAN:
+            clusters[-1].append(m)
+        else:
+            clusters.append([m])
+    stories = []
+    for cl in clusters:
+        ev = [m["event"] for m in cl]
+        n6, n4, nw = ev.count("six"), ev.count("four"), ev.count("wicket")
+        in_finish = cl[-1]["t"] > dur - 420
+        kind, label, base = None, None, 0.0
+        if "hattrick" in ev:
+            kind, label, base = "hattrick", "HAT-TRICK!", 2.0
+        elif n6 >= 3 or (n6 >= 2 and n6 + n4 >= 4):
+            kind, label, base = "sixes", ("%d SIXES!" % n6 if n6 >= 3 else "SIX-HITTING OVER!"), 1.5 + 0.2 * n6
+        elif "finish" in ev:
+            kind, label, base = "finish", "LAST OVER", 1.4
+        elif nw >= 2:
+            kind, label, base = "wickets", "WICKETS FALL!", 1.2 + 0.2 * nw
+        elif "drop" in ev:
+            kind, label, base = "drop", "CATCH DROPPED!", 1.1
+        elif "milestone" in ev:
+            kind, label, base = "milestone", "MILESTONE!", 1.0
+        elif len(cl) >= 3 and len(set(ev) & {"six", "four", "wicket"}) >= 2:
+            kind, label, base = "over", "BIG OVER!", 1.0 + 0.15 * len(cl)
+        elif in_finish and any(e in ("wicket", "catch") for e in ev):
+            kind, label, base = "finish", "LAST OVER", 1.0
+        if not kind:
+            continue
+        single = kind in ("hattrick", "drop", "milestone", "finish")
+        pool = cl
+        if kind == "sixes":
+            pool = [m for m in cl if m["event"] in ("six", "four")] or cl
+        elif kind == "wickets":
+            pool = [m for m in cl if m["event"] in ("wicket", "catch")] or cl
+        elif kind in ("hattrick", "drop", "milestone"):
+            pool = [m for m in cl if m["event"] == kind] or cl
+        pool = sorted(pool, key=score, reverse=True)[:(1 if kind in ("drop", "milestone") else 3 if single else PART_MAX)]
+        pool = sorted(pool, key=lambda m: m["t"])
+        parts = []
+        for m in pool:
+            a, b = _part(m, wide=single)
+            b = min(b, dur)
+            if parts and a <= parts[-1][1] + 1:
+                parts[-1][1] = max(parts[-1][1], b)
+            else:
+                parts.append([a, b])
+        while sum(b - a for a, b in parts) > SHORT_MAX and len(parts) > 1:
+            parts.pop()
+        tot = sum(b - a for a, b in parts)
+        if tot > SHORT_MAX:
+            parts = [[parts[0][1] - SHORT_MAX, parts[0][1]]]
+            tot = SHORT_MAX
+        if tot < 8:
+            continue
+        top = max(cl, key=score)
+        stories.append({"event": kind, "label": label, "parts": parts, "start": parts[0][0], "end": parts[-1][1],
+                        "t": top["t"], "audio": top["audio"], "db": max(m["db"] for m in cl),
+                        "text": " | ".join(m["text"][:70] for m in pool if m["text"])[:400],
+                        "score": round(base + 0.3 * max(score(m) for m in cl) + (0.15 if in_finish else 0.0), 3)})
+    return sorted(stories, key=lambda x: x["score"], reverse=True)
+
+
+def render_story(src, st, out):
+    """1 part = plain vertical cut; several parts = vertical cuts joined into one short."""
+    if len(st["parts"]) == 1:
+        a, b = st["parts"][0]
+        return cut(src, a, b, out, vertical=True, label=st["label"])
+    tmp, lst = os.path.splitext(out)[0] + "_parts", []
+    os.makedirs(tmp, exist_ok=True)
+    for i, (a, b) in enumerate(st["parts"]):
+        p = os.path.join(tmp, "p%02d.mp4" % i)
+        cut(src, a, b, p, vertical=True, label=st["label"] if i == 0 else None)
+        lst.append("file '%s'" % os.path.abspath(p))
+    open(os.path.join(tmp, "list.txt"), "w").write("\n".join(lst) + "\n")
+    sh(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", os.path.join(tmp, "list.txt"),
+        "-c", "copy", "-movflags", "+faststart", out])
+    for f in glob.glob(os.path.join(tmp, "*")):
+        os.remove(f)
+    os.rmdir(tmp)
+
+
 # ---------------------------------------------------------------- render
 ENC = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2", "-movflags", "+faststart"]
@@ -413,22 +516,31 @@ def process(src, outdir, meta):
     sh(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", os.path.join(segdir, "list.txt"),
         "-c", "copy", "-movflags", "+faststart", hl])
 
-    # ---- shorts: top K non-overlapping, each <= 50 s
+    # ---- shorts: real stories only (over compilations / hat-trick / catch drop / last over)
     shorts, used = [], []
-    for m in ranked:
+    heard_any = any(m["text"] for m in moments)
+    if heard_any:
+        cands = build_stories(moments, dur)
+        log("stories found: %d" % len(cands))
+        note("stories found: %d" % len(cands))
+    else:                                           # no transcript (whisper off/failed): audio-only fallback
+        cands = []
+        for m in ranked:
+            s_, e_ = m["start"], m["end"]
+            if e_ - s_ > 50:
+                s_ = e_ - 50
+            cands.append(dict(m, parts=[[s_, e_]], label=overlay_label(m["event"], len(cands))))
+    for m in cands:
         if len(shorts) >= N_SHORTS:
             break
-        if any(m["start"] < u[1] and m["end"] > u[0] for u in used):
-            continue
         s, e = m["start"], m["end"]
-        if e - s > 50:
-            s = e - 50
+        if any(s < u[1] and e > u[0] for u in used):
+            continue
         used.append((s, e))
         name = "short_%02d_%s.mp4" % (len(shorts) + 1, m["event"])
-        m["label"] = overlay_label(m["event"], len(shorts))
-        cut(src, s, e, os.path.join(outdir, name), vertical=True, label=m["label"])
+        render_story(src, m, os.path.join(outdir, name))
         shorts.append((name, m, s, e))
-        log("short", name)
+        log("short", name, m["label"], "parts=%d" % len(m["parts"]))
     for f in glob.glob(os.path.join(segdir, "*")):
         os.remove(f)
     os.rmdir(segdir)
@@ -443,12 +555,12 @@ def process(src, outdir, meta):
     L += ["", "== SHORTS (check, then upload) =="]
     for name, m, s, e in shorts:
         lab = m.get("label") or "BIG MOMENT"
-        tag = EVENTS[m["event"]][3] if m["event"] in EVENTS else ""
+        tag = _ev_tag(m["event"])
         L.append("%s | src %s-%s | score %.2f | audio +%.0fdB" % (name, fmt(s), fmt(e), m["score"], m["db"]))
         L.append("  title: %s %s | %s #shorts %s" % (EMOJI.get(m["event"], "⚡"), lab.title(), mt, tag))
         if m["text"]:
             L.append("  heard: %s" % m["text"][:140])
-    L += ["", "Note: hat-trick = keyword match only (needs 'hat-trick' in commentary). Always check before upload."]
+    L += ["", "Note: shorts = story-based (over compilation / hat-trick / catch drop / last over); needs keywords in commentary. Always check before upload."]
     open(os.path.join(outdir, "report.txt"), "w").write("\n".join(L) + "\n")
     json.dump(ranked, open(os.path.join(outdir, "moments.json"), "w"), ensure_ascii=False, indent=1)
     log("done: highlights %s + %d shorts" % (fmt(total), len(shorts)))
@@ -456,7 +568,7 @@ def process(src, outdir, meta):
     out_shorts = []
     for name, m, s_, e_ in shorts:
         lab = m.get("label") or "BIG MOMENT"
-        tg = EVENTS[m["event"]][3] if m["event"] in EVENTS else ""
+        tg = _ev_tag(m["event"])
         out_shorts.append({"id": name[:-4], "file": name, "event": m["event"], "score": m["score"],
                            "start": round(s_, 1), "end": round(e_, 1), "heard": m["text"][:140],
                            "label": lab, "title": ("%s %s | %s #shorts %s" % (EMOJI.get(m["event"], "⚡"), lab.title().rstrip("!"), mt, tg)).strip()})
