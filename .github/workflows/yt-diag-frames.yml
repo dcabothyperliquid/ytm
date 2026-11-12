@@ -1,0 +1,71 @@
+name: YT Diag Frames (manual)
+
+# Grabs a few frames from a VOD on our channel (default: newest long one) so we can SEE whether a scoreboard overlay exists.
+# Result: branch ytm-frames (jpg files).
+on:
+  workflow_dispatch:
+    inputs:
+      video:
+        description: "Video ID (blank = newest long VOD on the channel)"
+        required: false
+        default: ""
+      times:
+        description: "Comma list of seconds"
+        required: false
+        default: "1800,3600,5400,7200,9000,10800"
+
+permissions:
+  contents: write
+
+jobs:
+  frames:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          pip install -q -U "yt-dlp[default]"
+          for i in 1 2 3; do timeout 240 sudo apt-get update -qq && timeout 300 sudo apt-get install -y -qq ffmpeg && break; sleep 5; done
+      - name: Grab frames
+        env:
+          YT_COOKIES: ${{ secrets.YT_COOKIES }}
+          VID: ${{ github.event.inputs.video }}
+          TIMES: ${{ github.event.inputs.times }}
+          CH: ${{ vars.HL_CHANNEL || 'localmatchlive' }}
+        run: |
+          mkdir -p out
+          python hl_runner.py cookies || true
+          python - <<'PY'
+          import os, subprocess, json, re
+          vid = os.environ.get("VID","").strip()
+          base = ["yt-dlp","--no-warnings","--js-runtimes","node","--remote-components","ejs:github"] + (["--cookies","cookies.txt"] if os.path.exists("cookies.txt") else [])
+          info = {}
+          if not vid:
+              r = subprocess.run(base+["--flat-playlist","--playlist-end","15","--print","%(id)s|%(live_status)s|%(duration)s|%(title)s","https://www.youtube.com/@%s/streams" % os.environ["CH"]],capture_output=True,text=True)
+              for l in r.stdout.splitlines():
+                  p = l.split("|",3)
+                  if len(p)==4 and p[1] not in ("is_live","is_upcoming"):
+                      try:
+                          if float(p[2])>3000: vid=p[0]; info={"title":p[3],"dur":p[2]}; break
+                      except ValueError: pass
+          json.dump({"vid":vid,"info":info,"yt_stdout":""},open("out/info.json","w"))
+          print("VID",vid,info)
+          u = subprocess.run(base+["--no-playlist","-f","bv*[height<=720]","-g","https://www.youtube.com/watch?v="+vid],capture_output=True,text=True)
+          url = (u.stdout.strip().splitlines() or [""])[0]
+          print("url ok" if url else "NO URL: "+u.stderr[-400:])
+          for t in os.environ["TIMES"].split(","):
+              t=t.strip()
+              r = subprocess.run(["ffmpeg","-y","-loglevel","error","-ss",t,"-i",url,"-frames:v","1","-q:v","3","out/f_%s.jpg"%t],capture_output=True,text=True)
+              print(t, r.returncode, r.stderr[-200:])
+          PY
+          ls -la out
+      - name: Publish
+        run: |
+          git config user.name ytm-frames; git config user.email frames@users.noreply.github.com
+          cp -r out /tmp/o
+          git checkout --orphan ytm-frames && git rm -rf . -q && cp /tmp/o/* . && git add -A
+          git commit -qm "frames" && git push -f origin ytm-frames
