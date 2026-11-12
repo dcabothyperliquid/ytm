@@ -12,8 +12,8 @@ Never put tokens/cookies in this repo (public). Secrets live in GitHub Actions s
 
 Commands (hl_config.json `commands`): `confirm {vid,start,end}`, `skip {vid}`, `rescout {vid}`, plus old `edit`, `rerun` (rerun reuses the stored window).
 
-## 2. How the highlights video must be CUT (DECIDED, NOT built yet)
-Today the maker is still the old audio-peak + keyword "moments" ranker. The agreed cut:
+## 2. How the highlights video must be CUT (DECIDED, BUILT in hl_cutter.py — untested on a real VOD)
+Built 2026-11-13: `hl_cutter.py` transcribes the whole confirmed window (faster-whisper `HL_FULL_MODEL`, default base) and builds the plan below from the commentary; `hl_runner.process()` uses it for highlights.mp4 (falls back to the old audio-peak ranker if it fails; `HL_CUT=old` forces the old one). Shorts still use the old story-based maker. Budget = target length x1.5; the must-keep set (toss, wickets, sixes, no-balls, wides, last over) is never trimmed, so the reel can run longer than the target. The agreed cut:
 
 1. **Toss part**: banner / who is playing / toss result and who bats or bowls first, with the commentary playing UNINTERRUPTED (no audio chopped in the middle). If toss and decision are far apart, cut the gap (about 30 s of footage is fine), never cut mid-sentence.
 2. **Every over, in order**: show every four, six, wicket, no-ball, wide. Dot/single balls only as filler: if 3 balls of the over are already shown, don't add dots; if a dot is needed show the over's first, middle or last ball.
@@ -23,12 +23,12 @@ Today the maker is still the old audio-peak + keyword "moments" ranker. The agre
 6. **End**: last over complete, winning run / last wicket, then 30-60 s celebration.
 7. Only for matches that went to the last over (2nd innings completed).
 
-Needs a ball-by-ball timeline (which ball was dot/wide/no-ball/four/six/wicket). Local matches have no data API, so the source must be the on-screen scoreboard (OCR of score/overs per frame) and/or commentary. Not built.
+Limits of the built version: events come from commentary keywords + audio energy (no scoreboard, no real over numbers). Innings break = longest no-play stretch; death overs = last 18% of each innings; replay = extra 10 s after the 4 loudest sixes (not detected visually); filler dots = one dot ball when 100 s pass with nothing shown. A scoreboard/OCR ball-by-ball timeline would make this exact (open work 2-3).
 
 ## 3. Open work (in order)
 1. Section download (`--download-sections`) was flaky on the 8 h VOD `L2RKN7yGSdM` (frames at different times came back identical / some failed). Switch `run_vid` to full download (<=720p) + `ffmpeg -ss/-to` trim of the confirmed window. Watch runner disk (~14 GB free).
 2. Check whether these streams show a scoreboard overlay (frames so far showed LML SPORTS / KCC logos and sponsor slates only; no scoreboard seen yet). Diag workflow: `yt-diag-frames.yml` (pushes only jpg + info.json to branch `ytm-frames`, never cookies).
-3. Ball-by-ball timeline from scoreboard OCR -> over-by-over cutter per section 2.
+3. (Optional, more exact) Ball-by-ball timeline from scoreboard OCR to replace the commentary-based event list in hl_cutter.
 4. Worth-making check right after the match ends (see section 4).
 
 ## 4. "Is this match worth making highlights for" (idea, partly built)

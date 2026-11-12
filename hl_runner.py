@@ -21,6 +21,7 @@ import time
 
 import hl_review
 import hl_scout
+import hl_cutter
 
 # ---------------------------------------------------------------- config (env)
 CHANNEL = os.environ.get("HL_CHANNEL", "localmatchlive").lstrip("@")
@@ -32,6 +33,7 @@ LANG = os.environ.get("HL_LANG", "hi") or None               # commentary langua
 MAX_CAND = int(os.environ.get("HL_MAX_CAND", "60"))
 MAX_H = int(os.environ.get("HL_MAX_H", "1080"))
 NO_WHISPER = os.environ.get("HL_NO_WHISPER", "") == "1"
+PLAN_CUT = os.environ.get("HL_CUT", "plan") != "old"             # agreed over-by-over cut plan (hl_cutter.py); HL_CUT=old = audio-peak ranker
 KEEP_DAYS = 7                                                 # release assets older than this are deleted
 SKIP_TITLE = re.compile(r"highlight|#shorts|\bshorts?\b", re.I)  # never reprocess our own uploads
 WORK = "work"
@@ -50,8 +52,9 @@ EVENTS = {   # name: (regex, weight, label, hashtag)
     "ace": (r"\bace\b|match[\s-]?point|set[\s-]?point|tie[\s-]?break", 0.6, "BIG POINT", "#tennis"),
     "drop": (r"\bdrop(?:ped|s)?\b|butter[\s-]?fingers?|fumble|छोड़ा|छोड़\s*दिया|छूट\s*गया|ड्रॉप|मिस\s*फील्ड|miss(?:ed)?\s+(?:the\s+)?catch", 0.8, "CATCH DROPPED", "#catchdrop"),
 }
-EMOJI = {"finish": "😱", "hattrick": "🔥", "six": "💥", "wicket": "☝️", "milestone": "🎉", "catch": "🙌",
+EMOJI = {"toss": "🪙", "noball": "🚫", "wide": "↔️", "dot": "⚫", "finish": "😱", "hattrick": "🔥", "six": "💥", "wicket": "☝️", "milestone": "🎉", "catch": "🙌",
          "four": "🏏", "ace": "🎾", "moment": "⚡", "drop": "🤦", "fifty": "5️⃣0️⃣", "sixes": "💥", "wickets": "☝️", "over": "🔥"}
+CH_LABEL = {"toss": "Toss", "noball": "No ball", "wide": "Wide", "dot": "Dot ball", "finish": "Last over + win"}
 STORY_TAG = {"fifty": "#fifty", "sixes": "#sixes", "wickets": "#wickets", "over": "#bigover"}
 OVER_GAP = 150          # s: confirmed events closer than this belong to the same over / passage of play
 OVER_SPAN = 420         # s: max length of one story cluster
@@ -574,6 +577,14 @@ def process(src, outdir, meta, offset=0.0):
         log("fifty stories failed:", e)
         note("fifty stories failed: %s" % e, "warning")
         fifty = []
+    plan = None
+    if PLAN_CUT and not NO_WHISPER:
+        hl_review.set_live("transcribe", "Poora match sun raha hai (cut plan banane ke liye)", force=True)
+        try:
+            plan = hl_cutter.build_plan(sys.modules[__name__], wav, dur, db, TARGET_MIN)
+        except Exception as e:                     # noqa -- fall back to the old ranker, never lose the run
+            log("cut plan failed, using old ranker:", e)
+            note("cut plan failed: %s" % e, "warning")
     os.remove(wav)
     for m in moments:
         m["score"] = round(score(m), 3)
@@ -592,6 +603,9 @@ def process(src, outdir, meta, offset=0.0):
         chosen.append(m)
         total += m["end"] - m["start"]
     segs = merge_windows(chosen)
+    if plan:                                        # agreed cut plan replaces the ranked-moments highlights
+        segs, total = plan["segs"], plan["total"]
+        note("cut plan: %s | dropped %s | %.0fs" % (plan["info"], plan["dropped"], total))
     segdir = os.path.join(outdir, "_seg")
     os.makedirs(segdir, exist_ok=True)
     lst, chapters, t = [], [], 0.0
@@ -646,7 +660,7 @@ def process(src, outdir, meta, offset=0.0):
          "== HIGHLIGHTS (highlights.mp4, %s) ==" % fmt(total),
          "Suggested title: Match Highlights | %s" % mt, "Chapters (paste in description):"]
     for ct, ev, at in chapters:
-        L.append("%s %s %s" % (fmt(ct), EMOJI.get(ev, "⚡"), EVENTS[ev][2].title() if ev in EVENTS else "Big moment"))
+        L.append("%s %s %s" % (fmt(ct), EMOJI.get(ev, "⚡"), EVENTS[ev][2].title() if ev in EVENTS else CH_LABEL.get(ev, "Big moment")))
     L += ["", "== SHORTS (check, then upload) =="]
     for name, m, s, e in shorts:
         lab = m.get("label") or "BIG MOMENT"
