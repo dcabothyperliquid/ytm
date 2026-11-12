@@ -158,8 +158,8 @@ def find_candidates():
 def cmd_gate():
     """Decide what to do. Outputs: go, mode (run|apply), vid. Cheap (no ffmpeg)."""
     manual = os.environ.get("HL_VIDEO", "").strip()
-    if os.environ.get("HL_MODE", "") == "apply" or (not manual and hl_review.pending_commands()):
-        note("pending dashboard commands -> apply mode")
+    if os.environ.get("HL_MODE", "") == "apply" or (not manual and (hl_review.pending_commands() or hl_review.pending_uploads())):
+        note("pending dashboard commands/uploads -> apply mode")
         return out_gh(go="true", mode="apply", vid="")
     if manual:
         m = re.search(r"(?:v=|youtu\.be/|/live/|/shorts/)([0-9A-Za-z_-]{11})", manual) or re.match(r"^([0-9A-Za-z_-]{11})$", manual)
@@ -512,6 +512,8 @@ def run_vid(vid, target_min=None):
 def cmd_run():
     if os.environ.get("MODE", "run") == "apply":
         hl_review.apply_commands(sys.modules[__name__])
+        n = hl_review.upload_approved()
+        note("uploads done: %d" % n)
         return
     vid = os.environ.get("VID", "").strip()
     if not vid:

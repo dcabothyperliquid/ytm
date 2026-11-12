@@ -52,6 +52,9 @@ env:
   HL_AFTER_END: ${{ github.event.inputs.after_end || '' }}
   HL_LANG: ${{ vars.HL_LANG || 'hi' }}
   YT_COOKIES: ${{ secrets.YT_COOKIES }}
+  YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+  YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+  YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
 
 jobs:
   highlights:

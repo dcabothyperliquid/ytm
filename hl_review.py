@@ -11,6 +11,7 @@ import base64
 import glob
 import json
 import os
+import re
 import subprocess
 import time
 
@@ -256,4 +257,127 @@ def apply_commands(H):
             H.note("command %s failed: %s" % (c["id"], e), "error", "hl cmd")
             _mark(c["id"], str(e))
     log("commands applied:", n)
+    return n
+
+
+# ---------------------------------------------------------------- approved -> YouTube upload
+def _oauth_token():
+    import urllib.parse
+    import urllib.request
+    cid, sec, rt = (os.environ.get(k, "").strip() for k in ("YT_CLIENT_ID", "YT_CLIENT_SECRET", "YT_REFRESH_TOKEN"))
+    if not (cid and sec and rt):
+        raise RuntimeError("YT_CLIENT_ID/YT_CLIENT_SECRET/YT_REFRESH_TOKEN secrets missing")
+    data = urllib.parse.urlencode({"client_id": cid, "client_secret": sec, "refresh_token": rt,
+                                   "grant_type": "refresh_token"}).encode()
+    with urllib.request.urlopen(urllib.request.Request("https://oauth2.googleapis.com/token", data=data), timeout=30) as r:
+        return json.loads(r.read())["access_token"]
+
+
+def _download_asset(rel_id, name, dest):
+    r = sh(["gh", "api", "repos/%s/releases/%s/assets" % (repo(), rel_id), "--paginate", "-q",
+            '.[] | select(.name=="%s") | .id' % name], check=False)
+    ids = [x for x in (r.stdout or "").split() if x.isdigit()]
+    if not ids:
+        raise RuntimeError("file %s not found in release (older than %d days?)" % (name, KEEP_DAYS))
+    with open(dest, "wb") as f:
+        p = subprocess.run(["gh", "api", "-H", "Accept: application/octet-stream",
+                            "repos/%s/releases/assets/%s" % (repo(), ids[0])], stdout=f, stderr=subprocess.PIPE)
+    if p.returncode or os.path.getsize(dest) < 10000:
+        raise RuntimeError("asset download failed: %s" % (p.stderr or b"")[-300:].decode("utf-8", "ignore"))
+
+
+def _fmt_ts(sec):
+    sec = int(sec)
+    return "%d:%02d" % (sec // 60, sec % 60) if sec < 3600 else "%d:%02d:%02d" % (sec // 3600, sec % 3600 // 60, sec % 60)
+
+
+def _youtube_upload(path, title, desc, privacy, tags):
+    tok = _oauth_token()
+    meta = {"snippet": {"title": title[:100], "description": desc[:4900], "tags": tags[:15], "categoryId": "17"},
+            "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": False}}
+    size = os.path.getsize(path)
+    r = sh(["curl", "-sS", "-i", "-X", "POST",
+            "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
+            "-H", "Authorization: Bearer " + tok, "-H", "Content-Type: application/json; charset=UTF-8",
+            "-H", "X-Upload-Content-Type: video/mp4", "-H", "X-Upload-Content-Length: %d" % size,
+            "-d", json.dumps(meta)])
+    head = r.stdout
+    m = re.search(r"(?im)^location:\s*(\S+)", head)
+    if not m:
+        raise RuntimeError("upload init failed: %s" % head[-400:].replace(tok, "***"))
+    r = sh(["curl", "-sS", "--fail-with-body", "-X", "PUT", m.group(1), "-H", "Content-Type: video/mp4",
+            "-H", "Content-Length: %d" % size, "--data-binary", "@" + path, "--max-time", "1500"], check=False)
+    if r.returncode:
+        raise RuntimeError("upload failed: %s" % (r.stdout or r.stderr)[-400:])
+    return json.loads(r.stdout)["id"]
+
+
+def upload_approved():
+    """Upload every approved item once. Result is written into hl_state (matches[].shorts[].uploaded / highlight.uploaded)."""
+    cfg = load_cfg()
+    privacy = cfg.get("privacy") or "public"
+    rv = cfg.get("reviews") or {}
+    st, _ = load_state()
+    todo = []
+    for m in st["matches"]:
+        items = [("highlight", m["highlight"])] + [(s["id"], s) for s in m.get("shorts", [])]
+        for sid, it in items:
+            if rv.get("%s/%s" % (m["vid"], sid), {}).get("status") == "approved" and not it.get("uploaded"):
+                todo.append((m, sid, it))
+    log("approved & not uploaded yet:", len(todo))
+    os.makedirs("/tmp/hlup", exist_ok=True)
+    done = 0
+    for m, sid, it in todo:
+        path = os.path.join("/tmp/hlup", it["file"])
+        try:
+            _download_asset(m["release_id"], it["file"], path)
+            if sid == "highlight":
+                title = ("%s | Highlights" % m["title"])[:100]
+                ch = it.get("chapters") or []
+                desc = "Match highlights.\n\n" + "\n".join("%s %s" % (_fmt_ts(t), ev) for t, ev in ch) \
+                    + "\n\nFull match: https://www.youtube.com/watch?v=%s" % m["vid"]
+                tags = ["highlights", "live", "match"]
+            else:
+                title = it["title"] if "#shorts" in it["title"].lower() else (it["title"][:92] + " #Shorts")
+                desc = "%s\n\nFull match: https://www.youtube.com/watch?v=%s\n#Shorts" % (it["title"], m["vid"])
+                tags = ["shorts", "highlights", "live"]
+            yid = _youtube_upload(path, title, desc, privacy, tags)
+            log("uploaded", sid, "->", yid)
+
+            def mut(st2, vid=m["vid"], sid=sid, yid=yid):
+                for mm in st2["matches"]:
+                    if mm["vid"] != vid:
+                        continue
+                    tgt = mm["highlight"] if sid == "highlight" else next((x for x in mm["shorts"] if x["id"] == sid), None)
+                    if tgt is not None:
+                        tgt["uploaded"] = {"yid": yid, "at": int(time.time()), "privacy": privacy}
+                        tgt.pop("upload_error", None)
+            save_state(mut, "hl uploaded %s" % sid)
+            done += 1
+        except Exception as e:                      # noqa
+            log("upload failed", sid, e)
+
+            def mut(st2, vid=m["vid"], sid=sid, err=str(e)[:300]):
+                for mm in st2["matches"]:
+                    if mm["vid"] != vid:
+                        continue
+                    tgt = mm["highlight"] if sid == "highlight" else next((x for x in mm["shorts"] if x["id"] == sid), None)
+                    if tgt is not None:
+                        tgt["upload_error"] = err
+            save_state(mut, "hl upload error %s" % sid)
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+    return done
+
+
+def pending_uploads():
+    cfg = load_cfg()
+    rv = cfg.get("reviews") or {}
+    st, _ = load_state()
+    n = 0
+    for m in st["matches"]:
+        for sid, it in [("highlight", m["highlight"])] + [(s["id"], s) for s in m.get("shorts", [])]:
+            if rv.get("%s/%s" % (m["vid"], sid), {}).get("status") == "approved" and not it.get("uploaded") and not it.get("upload_error"):
+                n += 1
     return n
