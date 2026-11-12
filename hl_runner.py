@@ -191,15 +191,17 @@ def find_moments(db, dur):
     pad = np.pad(sm, (w // 2, w - w // 2 - 1), mode="edge")
     base = np.median(sliding_window_view(pad, w), axis=1)
     ex = sm - base
-    thr = max(4.0, float(np.percentile(ex, 96)))
+    # broadcast audio is heavily compressed -> low floor; candidate count scales with length (~1 per 4 min)
+    want = min(MAX_CAND, max(8, int(dur / 240)))
+    thr = max(1.5, min(4.0, float(np.percentile(ex, 96))))
     order = np.argsort(ex)[::-1]
     picks = []
     for i in order:
-        if ex[i] < thr or len(picks) >= MAX_CAND:
+        if ex[i] < thr or len(picks) >= want:
             break
         if i * HOP < 15 or i * HOP > dur - 5:
             continue
-        if all(abs(int(i) - j) * HOP >= 30 for j in picks):
+        if all(abs(int(i) - j) * HOP >= 40 for j in picks):
             picks.append(int(i))
     top = float(ex[picks[0]]) if picks else 1.0
     moments = []
