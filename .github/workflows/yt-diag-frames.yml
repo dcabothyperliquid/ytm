@@ -74,5 +74,5 @@ jobs:
           git config user.name ytm-frames; git config user.email frames@users.noreply.github.com
           git checkout --orphan ytm-frames && git rm -rf . -q
           git clean -fdxq
-          cp /tmp/o/* . && git add *.jpg info.json
+          cp /tmp/o/* . && git add -A
           git commit -qm "frames" && git push -f origin ytm-frames
