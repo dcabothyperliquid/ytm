@@ -16,7 +16,16 @@ No scoreboard / ball-by-ball API exists for these local matches, so events come 
 import os
 import re
 
-import numpy as np
+
+
+class _LazyNP:
+    """numpy is imported on first use: the Gate step imports hl_runner (-> hl_cutter) BEFORE numpy is installed on the runner."""
+    def __getattr__(self, name):
+        import numpy
+        return getattr(numpy, name)
+
+
+np = _LazyNP()
 
 FULL_MODEL = os.environ.get("HL_FULL_MODEL", "base") or "base"
 CHUNK = 600                 # s of audio per whisper call
