@@ -9,7 +9,7 @@ Detection is a heuristic on the commentary (faster-whisper on short sampled wind
   start  = first stretch of ball-by-ball talk (runs / four / six / over / ball ...)
   end    = result talk after the last ball ("won by", "match tied", "player of the match" ...)
   finished = result words found AND 2nd-innings signs found (target / need X runs / innings break)
-If the result is not found the match is marked "incomplete" and is NOT offered for highlights unless you force it.
+If start (toss OR first ball) or end (last ball / result) is not found the match is marked "incomplete" and is NOT offered for highlights unless you force it.
 The numbers are a starting point: the dashboard lets you edit start/end before confirming.
 """
 import json
@@ -227,19 +227,19 @@ def scout_vid(H, vid, title="", dur_hint=None):
             os.remove(wav)
     toss_ok = start is not None and why_s.startswith("toss")
     res_ok = bool(end and end_info["finished"])
-    # RULE: highlights only for a match we have from the toss to the winning run. A 4-5 min hole in the middle is fine.
-    finished = bool(toss_ok and res_ok and chase >= 1)
+    last_ok = bool(end)                              # last ball-by-ball commentary found (+ celebration)
+    # RULE (Naem): toss is NOT required. A match is ready when its START (toss OR first ball) and its END
+    # (winning run / last ball / result talk) are both found. A 4-5 min hole in the middle is fine.
+    finished = bool(start is not None and last_ok and (res_ok or chase >= 1 or end_info.get("lastover")))
     status = "pending" if finished else "incomplete"
     if start is None or not end:
         reason = "Match ka start/finish detect nahi hua — time khud daalo ya skip karo"
-    elif not toss_ok:
-        reason = "Toss nahi mila (stream toss ke baad shuru hua ho sakta hai) — pura match available nahi"
-    elif not res_ok:
-        reason = "Winning run / result nahi mila — match poora nahi laga (stream beech me kat gaya ho sakta hai)"
-    elif not chase:
-        reason = "Toss + result mila par 2nd innings ke signs nahi — pakka check karo"
+    elif not finished:
+        reason = "Start aur last ball mili par result / chase / last-over ke signs nahi — pakka check karo"
+    elif toss_ok:
+        reason = "Pura match laga: toss se last ball tak (beech ke 4-5 min miss ho to chalega)"
     else:
-        reason = "Pura match laga: toss se winning run tak (beech ke 4-5 min miss ho to chalega)"
+        reason = "Toss nahi mila par first ball se last ball tak match mila — time check karke Confirm karo"
     entry = {"vid": vid, "title": H.clean_title(title) or title or vid, "vod_min": round(dur / 60.0, 1),
              "found": int(time.time()), "status": status, "start": round(start, 1) if start is not None else None,
              "end": round(end, 1) if end else None, "finished": finished, "reason": reason, "evidence": ev[:8]}
