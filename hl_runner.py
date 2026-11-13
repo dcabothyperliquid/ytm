@@ -166,6 +166,22 @@ def find_candidates():
     return cands
 
 
+def find_by_title(q):
+    """Manual order by words of the title ("prize distribution mughlani"): newest ended video on our channel whose title has ALL words."""
+    words = [w for w in re.split(r"\W+", q.lower()) if w]
+    for tab in ("streams", "videos"):
+        r = sh(ytdlp_base() + ["--flat-playlist", "--playlist-end", "60", "--print",
+                               "%(id)s|%(live_status)s|%(duration)s|%(title)s",
+                               "https://www.youtube.com/@%s/%s" % (CHANNEL, tab)], check=False)
+        for line in (r.stdout or "").splitlines():
+            p = line.split("|", 3)
+            if len(p) < 4 or p[1] in ("is_live", "is_upcoming"):
+                continue
+            if words and all(w in p[3].lower() for w in words):
+                return p[0], p[3], p[2]
+    return None
+
+
 def cmd_gate():
     """Decide what to do. Outputs: go, mode (run|apply), vid. Cheap (no ffmpeg)."""
     manual = os.environ.get("HL_VIDEO", "").strip()
@@ -174,9 +190,17 @@ def cmd_gate():
         return out_gh(go="true", mode="apply", vid="")
     if manual:
         m = re.search(r"(?:v=|youtu\.be/|/live/|/shorts/)([0-9A-Za-z_-]{11})", manual) or re.match(r"^([0-9A-Za-z_-]{11})$", manual)
-        if not m:
-            log("manual video id/url not understood:", manual)
-            return out_gh(go="false", vid="")
+        if not m:                                   # not an id/url -> treat as title words
+            hit = find_by_title(manual)
+            if not hit:
+                log("manual video not understood / no title match:", manual)
+                note("no video on @%s matches title words: %s" % (CHANNEL, manual), "warning")
+                return out_gh(go="false", vid="")
+            note("title order '%s' -> %s | %s | dur %s" % (manual, hit[0], hit[1][:80], hit[2]))
+            class _M:
+                def group(self, i):
+                    return hit[0]
+            m = _M()
         hl_review.set_live("queued", "Manual scout shuru ho raha hai (pehle match ka time nikalega)", vid=m.group(1), force=True)
         return out_gh(go="true", mode="scout", vid=m.group(1))
     if not hl_review.load_cfg().get("auto", True):
