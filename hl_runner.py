@@ -789,7 +789,7 @@ def ensure_full(vid):
     h = min(MAX_H, FULL_H)
     sel = "b[height<=%d]/bv*[height<=%d]+ba/b" % (h, h)
     t0 = time.time()
-    sh(ytdlp_base() + ["--no-playlist", "-f", sel, "--merge-output-format", "mp4", "--concurrent-fragments", "4",
+    sh(ytdlp_base() + ["--no-playlist", "-f", sel, "--merge-output-format", "mp4", "--concurrent-fragments", "8",
                        "-o", path, "https://www.youtube.com/watch?v=" + vid])
     note("full download %s: %.0f MB in %.0fs, free disk %.1f GB" % (vid, os.path.getsize(path) / 1e6, time.time() - t0, free_gb()))
     return path

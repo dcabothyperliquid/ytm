@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
@@ -142,18 +143,29 @@ def _download_lowres(H, vid):
 def _strips(H, src, out_dir):
     shutil.rmtree(out_dir, ignore_errors=True)
     os.makedirs(out_dir)
-    H.sh(["ffmpeg", "-y", "-loglevel", "error", "-i", src, "-an",
+    H.sh(["ffmpeg", "-y", "-loglevel", "error", "-skip_frame", "nokey", "-i", src, "-an",
           "-vf", "fps=1/%d,crop=iw:ih*0.17:0:ih*0.83,scale=1920:-2,format=gray" % STEP,
           os.path.join(out_dir, "b_%05d.png")])
     return sorted(os.listdir(out_dir))
 
 
+_OCR_ENV = dict(os.environ, OMP_THREAD_LIMIT="1", OMP_WAIT_POLICY="PASSIVE")   # N tesseract procs x N OpenMP threads each = 50x slowdown on a 4-core runner
+_OCR_STAT = {"n": 0, "timeouts": 0, "secs": 0.0}
+
+
 def _ocr(path):
+    t0 = time.time()
     try:
-        r = subprocess.run(["tesseract", path, "-", "--psm", "6"], capture_output=True, text=True, timeout=60)
-        return re.sub(r"\s+", " ", r.stdout).strip()
+        r = subprocess.run(["tesseract", path, "-", "--psm", "6"], capture_output=True, text=True, timeout=25, env=_OCR_ENV)
+        txt = re.sub(r"\s+", " ", r.stdout).strip()
+    except subprocess.TimeoutExpired:
+        _OCR_STAT["timeouts"] += 1
+        txt = ""
     except Exception:                                      # noqa
-        return ""
+        txt = ""
+    _OCR_STAT["n"] += 1
+    _OCR_STAT["secs"] += time.time() - t0
+    return txt
 
 
 def scan(H, vid, title="", dur_hint=None):
@@ -176,8 +188,9 @@ def scan(H, vid, title="", dur_hint=None):
         with ThreadPoolExecutor(max_workers=max(2, os.cpu_count() or 2)) as ex:
             for i, txt in enumerate(ex.map(lambda nm: _ocr(os.path.join(out_dir, nm)), names)):
                 rows.append((i * float(STEP), flags(txt), txt))
-                if i % 60 == 0:
+                if i % 30 == 0:
                     hl_review.set_live("scout", "Scout: scoreboard padh raha hai (%s)" % fmt(i * STEP), cur=i + 1, total=n)
+                    H.log("scoreboard OCR %d/%d, %.2fs/strip, %d timeouts" % (i + 1, n, _OCR_STAT["secs"] / max(1, _OCR_STAT["n"]), _OCR_STAT["timeouts"]))
     finally:
         shutil.rmtree(out_dir, ignore_errors=True)
         for f in os.listdir(H.WORK):
