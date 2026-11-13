@@ -79,7 +79,7 @@ jobs:
         timeout-minutes: 15
         run: |
           for i in 1 2 3; do
-            timeout 240 sudo apt-get update -qq && timeout 300 sudo apt-get install -y -qq ffmpeg fonts-dejavu-core && break
+            timeout 240 sudo apt-get update -qq && timeout 300 sudo apt-get install -y -qq ffmpeg fonts-dejavu-core tesseract-ocr && break
             echo "apt retry $i"; sleep 5
           done
           pip install -q numpy faster-whisper
