@@ -634,7 +634,7 @@ def process(src, outdir, meta, offset=0.0):
     if PLAN_CUT and not NO_WHISPER:
         hl_review.set_live("transcribe", "Poora match sun raha hai (cut plan banane ke liye)", force=True)
         try:
-            plan = hl_cutter.build_plan(sys.modules[__name__], wav, dur, db, TARGET_MIN)
+            plan = hl_cutter.build_plan(sys.modules[__name__], wav, dur, db, TARGET_MIN, src=src)
         except Exception as e:                     # noqa -- fall back to the old ranker, never lose the run
             log("cut plan failed, using old ranker:", e)
             note("cut plan failed: %s" % e, "warning")
@@ -893,7 +893,14 @@ def _cmd_run():
     if os.environ.get("MODE", "run") == "scout":
         info = sh(ytdlp_base() + ["--no-playlist", "--print", "%(title)s|%(duration)s", "https://www.youtube.com/watch?v=" + vid], check=False).stdout.strip()
         title, _, dur = info.rpartition("|")
-        e = hl_scout.scout_vid(sys.modules[__name__], vid, title)
+        want = os.environ.get("HL_MATCH", "").strip()
+        e = hl_scout.scout_vid(sys.modules[__name__], vid, title, want=want or None)
+        if want and e["status"] == "pending" and e.get("start") is not None and e.get("end"):
+            # a match number was asked for by hand -> no second step: make its highlights right away in this job
+            note("match %s asked by hand -> making highlights now (%s - %s)" % (want, fmt(e["start"]), fmt(e["end"])))
+            hl_review.do_confirm(sys.modules[__name__], {"vid": vid, "start": e["start"], "end": e["end"]})
+            hl_review.set_live("done", "Highlights ready (match %s) - dashboard me Approve karo" % want, vid=vid, force=True)
+            return
         hl_review.set_live("done", "Match mila (%s - %s) — dashboard me check karke Confirm karo" % (fmt(e["start"] or 0), fmt(e["end"] or 0))
                            if e["status"] == "pending" else "Scout: %s" % e["reason"], vid=vid, force=True)
         return

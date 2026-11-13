@@ -27,7 +27,9 @@ TOSS_GAP = 150          # toss frames closer than this (s) are one toss block
 PLAY_AFTER_TOSS = 30 * 60   # a toss only starts a match if live play follows within this
 MIN_PLAY_FRAMES = 8     # ~2 min of live scoreboard after the toss
 LEAD_IN = 20.0          # s before the first toss frame
-CELEBRATION = 50.0      # s after the first result banner (winning run + celebration)
+CELEBRATION = 150.0     # s after the first result banner (winning run + celebration; the banner shows a few s after the last ball)
+FINAL_TAIL = 600.0      # a FINAL keeps the trophy / cup lift too
+BOARD_H = int(os.environ.get("HL_BOARD_H", "480") or 480)   # 360p was too blurry for the small banner text
 TOSS_PENDING_MAX = 360  # if "TOSS PENDING" sits longer than this before "won the toss", start 60 s before the won-toss frame
 
 TOSS_RX = re.compile(r"\bT[O0]SS\b", re.I)
@@ -38,6 +40,7 @@ OVERS_RX = re.compile(r"\b\d{1,2}\.\d\s*\(\s*\d{1,2}\s*\)")
 TEAMV_RX = re.compile(r"\b[A-Z]{3}\s?V\s?[A-Z]{3}\b|\b\d{1,3}\s*[-–]\s*\d{1,2}\s+\d{1,2}\.\d\b")
 PLAYWORD_RX = re.compile(r"\bRUN\s+RATE\b|\bCRR\b|\bRRR\b|\bFOURS\b|\bSIXES\b|\bTARGET\b|\bNEED\s+\d+|\bPARTNERSHIP\b|\bINNING\s+\d", re.I)
 MATCHNO_RX = re.compile(r"MATCH\s*N[O0GQ]\.?\s*[-:]?\s*(\d{1,3})", re.I)
+FINAL_RX = re.compile(r"(?<!SEMI )(?<!SEMI-)(?<!SEMI)(?<!QUARTER )(?<!QUARTER-)\bFINAL\b")
 WINNER_RX = re.compile(r"([A-Z0-9][A-Z0-9 .&'-]{2,40}?)\s+WON\s+BY\s+([A-Z0-9 ]{3,30})", re.I)
 
 
@@ -56,7 +59,7 @@ def flags(txt):
 
 
 # ---------------------------------------------------------------- pure logic (unit-testable)
-def segment(rows, dur):
+def segment(rows, dur, title=""):
     """rows = [(t_seconds, flags_dict, text)] sorted by t. Returns list of match dicts."""
     rows = sorted(rows, key=lambda r: r[0])
     toss = [r for r in rows if r[1]["toss"]]
@@ -81,17 +84,17 @@ def segment(rows, dur):
     out = []
     for i, b in enumerate(valid):
         limit = valid[i + 1][0] if i + 1 < len(valid) else dur
-        out.append(_one_match(rows, b[0], b[1], b[2], limit, dur, toss_seen=True))
+        out.append(_one_match(rows, b[0], b[1], b[2], limit, dur, toss_seen=True, title=title))
     # a result before the first toss block = the VOD began in the middle of a match (no toss in the VOD)
     first_lim = valid[0][0] if valid else dur
     early = [r for r in rows if r[0] < first_lim and r[1]["result"]]
     play_before = [r for r in rows if r[0] < (early[0][0] if early else 0) and r[1]["play"]]
     if early and len(play_before) >= MIN_PLAY_FRAMES:
-        out.insert(0, _one_match(rows, play_before[0][0], play_before[0][0], None, first_lim, dur, toss_seen=False))
+        out.insert(0, _one_match(rows, play_before[0][0], play_before[0][0], None, first_lim, dur, toss_seen=False, title=title))
     return out
 
 
-def _one_match(rows, t_first, t_last, t_done, limit, dur, toss_seen):
+def _one_match(rows, t_first, t_last, t_done, limit, dur, toss_seen, title=""):
     if toss_seen:
         ref = t_done - 60.0 if (t_done is not None and t_done - t_first > TOSS_PENDING_MAX) else t_first
         start = max(0.0, ref - LEAD_IN)
@@ -101,7 +104,7 @@ def _one_match(rows, t_first, t_last, t_done, limit, dur, toss_seen):
     res = [r for r in span if r[1]["result"]]
     play_n = sum(1 for r in span if r[1]["play"])
     m = {"start": round(start, 1), "end": None, "toss_seen": toss_seen, "result": False,
-         "play_frames": play_n, "chase_frames": 0, "match_no": None, "winner": "", "result_at": None}
+         "play_frames": play_n, "chase_frames": 0, "match_no": None, "winner": "", "result_at": None, "final": False}
     nos = Counter(MATCHNO_RX.search(r[2].upper()).group(1) for r in span if MATCHNO_RX.search(r[2].upper()))
     if nos:
         m["match_no"] = nos.most_common(1)[0][0]
@@ -109,7 +112,10 @@ def _one_match(rows, t_first, t_last, t_done, limit, dur, toss_seen):
         t_res = res[0][0]
         m["result"] = True
         m["result_at"] = t_res
-        m["end"] = round(min(t_res + CELEBRATION, limit - 10.0 if limit < dur else dur, dur), 1)
+        n_final = sum(1 for r in span if FINAL_RX.search(r[2].upper()))
+        m["final"] = n_final >= 2 or bool(re.search(r"(?<!semi)(?<!semi )(?<!semi-)\bfinal\b", (title or "").lower()))
+        tail = FINAL_TAIL if m["final"] else CELEBRATION
+        m["end"] = round(min(t_res + tail, limit - 10.0 if limit < dur else dur, dur), 1)
         w = WINNER_RX.search(res[0][2].upper())
         m["winner"] = ("%s WON BY %s" % (w.group(1).strip(), w.group(2).strip())) if w else res[0][2][:60]
         mid = start + (t_res - start) * 0.5
@@ -124,7 +130,7 @@ def _download_lowres(H, vid):
         if f.startswith("board_src"):
             os.remove(os.path.join(H.WORK, f))
     hl_review.set_live("download", "Scout: scoreboard ke liye chhota (360p) video download", vid=vid, force=True)
-    H.sh(H.ytdlp_base() + ["--no-playlist", "-f", "bv*[height<=360]/bv*[height<=480]/worst",
+    H.sh(H.ytdlp_base() + ["--no-playlist", "-f", "bv*[height<=%d]/bv*[height<=720]/worst" % BOARD_H,
                            "-o", os.path.join(H.WORK, "board_src.%(ext)s"),
                            "https://www.youtube.com/watch?v=" + vid])
     src = next((os.path.join(H.WORK, f) for f in os.listdir(H.WORK) if f.startswith("board_src")), None)
@@ -184,4 +190,4 @@ def scan(H, vid, title="", dur_hint=None):
     H.log("scoreboard: %d/%d strips had scoreboard text" % (hits, len(rows)))
     if hits < 5:
         return None
-    return {"dur": dur, "frames": len(rows), "hits": hits, "matches": segment(rows, dur or rows[-1][0] + STEP)}
+    return {"dur": dur, "frames": len(rows), "hits": hits, "matches": segment(rows, dur or rows[-1][0] + STEP, title)}

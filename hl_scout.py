@@ -205,7 +205,7 @@ def chase_seen(L, start, end):
     return n
 
 
-def scout_vid(H, vid, title="", dur_hint=None):
+def scout_vid(H, vid, title="", dur_hint=None, want=None):
     """Run the whole scout for one VOD and store the result in hl_state.scouts."""
     hl_review.set_live("scout", "Scout shuru: %s" % (H.clean_title(title) or vid), vid=vid, title=H.clean_title(title), force=True)
     # 1) scoreboard OCR first (reliable); commentary scan below is only the fallback
@@ -216,7 +216,7 @@ def scout_vid(H, vid, title="", dur_hint=None):
         H.note("scoreboard scout failed: %s" % e, "warning", "hl scout")
         bm = None
     if bm and bm["matches"]:
-        return _entry_from_board(H, vid, title, bm)
+        return _entry_from_board(H, vid, title, bm, want)
     wav = _audio_to_wav(H, vid, dur_hint)
     try:
         L = _Listener(H, wav)
@@ -261,10 +261,11 @@ def scout_vid(H, vid, title="", dur_hint=None):
     return entry
 
 
-def _entry_from_board(H, vid, title, bm):
+def _entry_from_board(H, vid, title, bm, want=None):
     import hl_board
     ms = bm["matches"]
-    best = next((m for m in ms if m["result"] and m["toss_seen"]), None) or next((m for m in ms if m["result"]), None) or ms[0]
+    best = (next((m for m in ms if want and str(m["match_no"]) == str(want)), None)           # the match number asked for (HL_MATCH)
+            or next((m for m in ms if m["result"] and m["toss_seen"]), None) or next((m for m in ms if m["result"]), None) or ms[0])
     done = bool(best["result"] and best["end"])
     ev = []
     for m in ms:
@@ -274,6 +275,8 @@ def _entry_from_board(H, vid, title, bm):
                                            m["winner"] or ("toss nahi mila, first ball se" if not m["toss_seen"] else "result banner nahi")))
     if best["chase_frames"]:
         ev.append("2nd innings ke signs (target/need) mile")
+    if best.get("final"):
+        ev.append("FINAL: result ke baad cup lift tak (+10 min)")
     if done:
         reason = "Scoreboard se match mila: toss se result tak — time check karke Confirm karo" if best["toss_seen"] \
             else "Scoreboard se match mila (toss nahi mila, first ball se) — time check karke Confirm karo"
@@ -282,6 +285,7 @@ def _entry_from_board(H, vid, title, bm):
     entry = {"vid": vid, "title": H.clean_title(title) or title or vid, "vod_min": round(bm["dur"] / 60.0, 1),
              "found": int(time.time()), "status": "pending" if done else "incomplete", "start": best["start"],
              "end": best["end"], "finished": done, "reason": reason, "evidence": ev[:8], "source": "scoreboard",
+             "match_no": best["match_no"], "final": bool(best.get("final")),
              "others": [{"start": m["start"], "end": m["end"], "match_no": m["match_no"]} for m in ms if m is not best]}
 
     def mut(st):

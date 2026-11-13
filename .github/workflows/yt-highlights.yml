@@ -27,6 +27,10 @@ on:
         description: "run = process a stream, apply = apply dashboard edit/re-make commands"
         required: false
         default: "run"
+      match:
+        description: "Match number inside the VOD to make highlights for (blank = scout picks, wait for Confirm)"
+        required: false
+        default: ""
       after_end:
         description: "set by the mirror when a relay ended (waits for the VOD to be ready)"
         required: false
@@ -49,6 +53,7 @@ env:
   HL_TARGET_MIN: ${{ github.event.inputs.target_min || '10' }}
   HL_MODEL: ${{ github.event.inputs.model || 'small' }}
   HL_MODE: ${{ github.event.inputs.mode || '' }}
+  HL_MATCH: ${{ github.event.inputs.match || '' }}
   HL_AFTER_END: ${{ github.event.inputs.after_end || '' }}
   HL_LANG: ${{ vars.HL_LANG || 'hi' }}
   YT_COOKIES: ${{ secrets.YT_COOKIES }}
@@ -82,7 +87,7 @@ jobs:
             timeout 240 sudo apt-get update -qq && timeout 300 sudo apt-get install -y -qq ffmpeg fonts-dejavu-core tesseract-ocr && break
             echo "apt retry $i"; sleep 5
           done
-          pip install -q numpy faster-whisper
+          pip install -q numpy faster-whisper pillow
           command -v ffmpeg; node --version
 
       - name: Cache whisper model

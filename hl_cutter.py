@@ -16,6 +16,8 @@ No scoreboard / ball-by-ball API exists for these local matches, so events come 
 import os
 import re
 
+import hl_scoreboard
+
 
 
 class _LazyNP:
@@ -54,6 +56,7 @@ DEATH_FRAC = 0.18           # last 18% of an innings = death overs
 FILL_GAP = 100              # s without any clip in the early overs -> add one dot ball as filler
 TOSS_MAX = 90.0
 END_MAX = 360.0
+SB_END_MAX = 480.0           # scoreboard mode: the last over (+ win + celebration) is kept whole, up to this long
 
 
 # ---------------------------------------------------------------- transcript
@@ -166,14 +169,27 @@ def end_block(segs, dur):
 
 
 # ---------------------------------------------------------------- the plan
-def plan_from_segments(segs, dur, target_s, energy=None):
-    """-> dict(segs=[{start,end,event,...}], total, dropped={...}, info={...})"""
-    toss_clips, play_from = toss_block(segs, dur)
-    end_a, end_b = end_block(segs, dur)
-    br_a, br_b = innings_break(segs, dur)
-    ev = [e for e in events_from_segments(segs, energy) if play_from <= e["t"] < end_a]
+def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
+    """-> dict(segs=[{start,end,event,...}], total, dropped={...}, info={...})
+    sb = scoreboard analysis (hl_scoreboard.analyze_window): exact ball events / innings / last over instead of commentary keywords."""
+    if sb:
+        toss_clips = [(0.0, min(TOSS_MAX, dur * 0.25))]            # the window starts ~35 s before the toss banner: banner + captains + decision, uninterrupted
+        play_from = toss_clips[-1][1]
+        end_b = dur
+        end_a = max(play_from, sb["last_over_start"] - 8.0, dur - SB_END_MAX)   # the match-deciding over is shown complete, then win + celebration
+        br_a, br_b = sb["break"]
+        ev = [dict(e) for e in sb["events"] if play_from <= e["t"] < end_a]
+        for e in ev:
+            e["db"] = float(energy(e["t"])) if energy else 0.0
+    else:
+        toss_clips, play_from = toss_block(segs, dur)
+        end_a, end_b = end_block(segs, dur)
+        br_a, br_b = innings_break(segs, dur)
+        ev = [e for e in events_from_segments(segs, energy) if play_from <= e["t"] < end_a]
 
     def in_death(t):
+        if sb:
+            return any(a <= t < b for a, b in sb["death"])
         if t < br_a:
             lo, hi = play_from, br_a
         elif t >= br_b:
@@ -270,10 +286,10 @@ def plan_from_segments(segs, dur, target_s, energy=None):
         counts[c["event"]] = counts.get(c["event"], 0) + 1
     return {"segs": out, "total": total, "dropped": dropped,
             "info": {"counts": counts, "innings_break": [round(br_a), round(br_b)], "play_from": round(play_from),
-                     "over_budget": total > target_s}}
+                     "over_budget": total > target_s, "source": "scoreboard" if sb else "commentary"}}
 
 
-def build_plan(H, wav, dur, db, target_min, hop=0.5):
+def build_plan(H, wav, dur, db, target_min, hop=0.5, src=None):
     """called from hl_runner.process(): transcribe the whole window, build the plan. db = energy track (dB per hop)."""
     def energy(t):
         i = int(t / hop)
@@ -282,6 +298,17 @@ def build_plan(H, wav, dur, db, target_min, hop=0.5):
 
     def prog(cur, tot):
         H.hl_review.set_live("transcribe", "Poora match sun raha hai (cut plan) %d/%d" % (cur, tot), cur=cur, total=tot)
+    if src and os.environ.get("HL_SB", "1") != "0":                 # scoreboard first: exact, and no whole-match whisper run needed
+        try:
+            sb = hl_scoreboard.analyze_window(H, src, dur)
+        except Exception as e:                                      # noqa
+            H.log("scoreboard analysis failed:", e)
+            sb = None
+        if sb and sum(1 for e in sb["events"] if e["kind"] != "dot") >= 4:
+            plan = plan_from_segments([], dur, target_min * 60.0 * 1.5, energy, sb=sb)
+            H.log("cutter plan (scoreboard):", plan["info"], "dropped", plan["dropped"], "total %.0fs" % plan["total"])
+            return plan
+        H.log("scoreboard gave too few events -> commentary fallback")
     segs = transcribe_full(H, wav, dur, prog)
     H.log("cutter: %d transcript segments" % len(segs))
     # budget: target length x1.5 (the must-keep set may exceed it, it is never trimmed)
