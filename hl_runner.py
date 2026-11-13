@@ -555,6 +555,35 @@ def clean_title(t):
     return re.sub(r"\s+", " ", t).strip(" |-")[:70]
 
 
+def clip_to_highlights(st, segs, min_cover=0.5, min_tot=8.0):
+    """Shorts come ONLY from footage that is inside highlights.mp4.
+    Every part of the story is intersected with the highlight segments (src timeline); pieces that
+    the highlights dropped are removed. Returns a new story dict or None if too little is left."""
+    spans = sorted([float(g["start"]), float(g["end"])] for g in segs)
+    orig = sum(b - a for a, b in st["parts"]) or 1.0
+    pieces = []
+    for a, b in st["parts"]:
+        for ga, gb in spans:
+            lo, hi = max(a, ga), min(b, gb)
+            if hi - lo >= 1.5:
+                if pieces and lo <= pieces[-1][1] + 1.0:
+                    pieces[-1][1] = max(pieces[-1][1], hi)
+                else:
+                    pieces.append([lo, hi])
+    if not pieces:
+        return None
+    while sum(b - a for a, b in pieces) > SHORT_MAX and len(pieces) > 1:
+        pieces.pop()
+    tot = sum(b - a for a, b in pieces)
+    if tot > SHORT_MAX:
+        pieces = [[pieces[0][1] - SHORT_MAX, pieces[0][1]]]
+        tot = SHORT_MAX
+    cover = tot / orig
+    if tot < min_tot or cover < min_cover:
+        return None
+    return dict(st, parts=pieces, start=pieces[0][0], end=pieces[-1][1], score=round(st["score"] * (0.5 + 0.5 * min(1.0, cover)), 3))
+
+
 def process(src, outdir, meta, offset=0.0):
     """offset = where src starts inside the original VOD (confirmed match window) -> all stored/reported times are VOD times."""
     os.makedirs(outdir, exist_ok=True)
@@ -637,6 +666,15 @@ def process(src, outdir, meta, offset=0.0):
             if e_ - s_ > 50:
                 s_ = e_ - 50
             cands.append(dict(m, parts=[[s_, e_]], label=overlay_label(m["event"], len(cands))))
+    # shorts must come from the SAME match AND from inside highlights.mp4 (never footage the highlights dropped)
+    inside = []
+    for m in cands:
+        c = clip_to_highlights(m, segs)
+        if c:
+            inside.append(c)
+    log("shorts: %d of %d stories lie inside the highlights" % (len(inside), len(cands)))
+    note("shorts from highlights only: %d of %d stories kept" % (len(inside), len(cands)))
+    cands = sorted(inside, key=lambda x: x["score"], reverse=True)
     for m in cands:
         if len(shorts) >= N_SHORTS:
             break
