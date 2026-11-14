@@ -429,6 +429,8 @@ def _fb_upload(path, kind, title, desc):
         if not j.get("success"):
             raise RuntimeError("FB reel publish failed: %s" % json.dumps(j)[:200])
         return vid
+    if size > 1000 * 1024 * 1024:
+        raise RuntimeError("FB highlight file %d MB > 1 GB (simple upload limit)" % (size // 1048576))
     j = _fb_call(["-X", "POST", "https://graph-video.facebook.com/v21.0/%s/videos" % page,
                   "-F", "source=@" + path, "-F", "title=" + title[:200], "-F", "description=" + desc[:5000],
                   "-F", "access_token=" + tok], tok)
@@ -509,6 +511,56 @@ def upload_approved():
         finally:
             if os.path.exists(path):
                 os.remove(path)
+    try:
+        fb_retry()
+    except Exception as e:                              # noqa
+        log("fb_retry error", e)
+    return done
+
+
+def fb_retry():
+    """Items already on YouTube whose Facebook upload failed earlier (fb_error): try again, max 3 times."""
+    page, tok = _fb_creds()
+    if not (page and tok):
+        return 0
+    st, _ = load_state()
+    todo = []
+    for m in st["matches"]:
+        for sid, it in [("highlight", m["highlight"])] + [(x["id"], x) for x in m.get("shorts", [])]:
+            if it.get("uploaded") and it.get("fb_error") and not it.get("fb_uploaded") and int(it.get("fb_tries") or 1) < 3:
+                todo.append((m, sid, it))
+    done = 0
+    os.makedirs("/tmp/hlup", exist_ok=True)
+    for m, sid, it in todo:
+        path = os.path.join("/tmp/hlup", it["file"])
+        fb_id, fb_err = None, None
+        try:
+            _download_asset(m["release_id"], it["file"], path)
+            t = (m["title"] + " | Highlights") if sid == "highlight" else it["title"].replace("#Shorts", "").strip()
+            d = t + "\n\nFull match: https://www.youtube.com/watch?v=%s\n\n#cricket #highlights #LML" % m["vid"]
+            fb_id = _fb_upload(path, "highlight" if sid == "highlight" else "short", t[:100], d)
+        except Exception as e:                          # noqa
+            fb_err = str(e)[:300]
+            log("facebook retry failed", sid, fb_err)
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+
+        def mut(st2, vid=m["vid"], sid=sid, fb_id=fb_id, fb_err=fb_err):
+            for mm in st2["matches"]:
+                if mm["vid"] != vid:
+                    continue
+                tgt = mm["highlight"] if sid == "highlight" else next((x for x in mm["shorts"] if x["id"] == sid), None)
+                if tgt is None:
+                    continue
+                if fb_id:
+                    tgt["fb_uploaded"] = {"id": fb_id, "at": int(time.time())}
+                    tgt.pop("fb_error", None)
+                else:
+                    tgt["fb_error"] = fb_err
+                    tgt["fb_tries"] = int(tgt.get("fb_tries") or 1) + 1
+        save_state(mut, "hl fb retry %s" % sid)
+        done += 1 if fb_id else 0
     return done
 
 
