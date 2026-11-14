@@ -1,0 +1,72 @@
+name: YT Diag Match Proxy (manual)
+
+# Cuts ONE confirmed match window out of a VOD and uploads a small 360p / 5 fps proxy (+ meta.json with the real start offset)
+# to a DRAFT release `hlview-<vid>-<sfx>` so the match can be reviewed frame by frame. Nothing is posted anywhere.
+on:
+  workflow_dispatch:
+    inputs:
+      video:
+        description: "Video ID"
+        required: true
+        default: "ItjKKj04ipg"
+      start:
+        description: "Window start (s, original VOD time)"
+        required: true
+        default: "6805"
+      end:
+        description: "Window end (s, original VOD time)"
+        required: true
+        default: "13665"
+      sfx:
+        description: "Release suffix"
+        required: false
+        default: "m11"
+
+permissions:
+  contents: write
+
+jobs:
+  proxy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          pip install -q -U "yt-dlp[default]"
+          for i in 1 2 3; do timeout 240 sudo apt-get update -qq && timeout 300 sudo apt-get install -y -qq ffmpeg && break; sleep 5; done
+      - name: Cookies
+        env:
+          YT_COOKIES: ${{ secrets.YT_COOKIES }}
+        run: python hl_runner.py cookies || true
+      - name: Download VOD (360p), trim window, make proxy
+        env:
+          VID: ${{ github.event.inputs.video }}
+          START: ${{ github.event.inputs.start }}
+          END: ${{ github.event.inputs.end }}
+        run: |
+          mkdir -p out
+          python -u - <<'PY'
+          import os, json, subprocess
+          import hl_runner as h
+          h.FULL_H = 360
+          vid = os.environ["VID"]; s = float(os.environ["START"]); e = float(os.environ["END"])
+          full = h.ensure_full(vid)
+          real = h.trim(full, max(0.0, s - 5.0), e + 5.0, "seg.mp4")
+          subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", "seg.mp4", "-vf", "fps=5,scale=640:360",
+                          "-c:v", "libx264", "-preset", "veryfast", "-crf", "30", "-c:a", "aac", "-ac", "1", "-b:a", "40k",
+                          "-movflags", "+faststart", "out/match_proxy.mp4"], check=True)
+          json.dump({"vid": vid, "window": [s, e], "real_start": real,
+                     "note": "proxy time t  ->  original VOD time = real_start + t"}, open("out/meta.json", "w"))
+          print("proxy MB", os.path.getsize("out/match_proxy.mp4") / 1e6, "real_start", real)
+          PY
+      - name: Upload to draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: hlview-${{ github.event.inputs.video }}-${{ github.event.inputs.sfx }}
+        run: |
+          gh release delete "$TAG" -R "${{ github.repository }}" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" -R "${{ github.repository }}" --draft --target main --title "View $TAG" --notes "match proxy for review" out/match_proxy.mp4 out/meta.json
