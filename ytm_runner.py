@@ -218,6 +218,11 @@ class Detector:
                 if not it or it["snippet"].get("liveBroadcastContent") != "live":
                     continue
                 t = it["snippet"].get("title", "")
+                try:
+                    import ytm_style
+                    ytm_style.SRC_DESC[t[:120]] = (it["snippet"].get("description") or "")[:1500]
+                except Exception:
+                    pass
                 if kws and not any(k in t.lower() for k in kws):
                     continue
                 out.append({"video_id": v, "title": t[:120], "channel": c.get("name") or c["value"],
