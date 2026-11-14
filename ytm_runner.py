@@ -1195,7 +1195,7 @@ class Relay:
     def step(self, live, cfg, now):
         self.live_last = live
         r = self.st.get("relay")
-        cap = int(cfg.get("daily_cap_h", 12)) * 60
+        cap = int(cfg.get("daily_cap_h", 20)) * 60
         if r:
             if any(x["video_id"] == r["video_id"] for x in live):
                 r["not_live_since"] = None
@@ -1289,7 +1289,7 @@ def gate():
         cfg, _ = read_json(CFG_PATH)
         st, _ = read_json(ST_PATH)
         if cfg and cfg.get("enabled") and cfg.get("channels") and in_window(cfg) \
-                and minutes_today(st or {}) < int(cfg.get("daily_cap_h", 12)) * 60:
+                and minutes_today(st or {}) < int(cfg.get("daily_cap_h", 20)) * 60:
             out = "true"
     except Exception as e:
         log("gate error: %s" % e)
@@ -1360,7 +1360,7 @@ def run(_sleep=time.sleep, _read=None, _write=None, _relay_factory=None, _detect
                 relay.step([x for x in live if x["video_id"] != r2v] if r2v else live, cfg, now)
             except Exception as e:
                 errors = ["%s: %s" % (type(e).__name__, str(e)[:120])]
-            if minutes_today(st, now) >= int(cfg.get("daily_cap_h", 12)) * 60 and not st.get("relay"):
+            if minutes_today(st, now) >= int(cfg.get("daily_cap_h", 20)) * 60 and not st.get("relay"):
                 log("daily cap reached -> stop")
                 break
         shown = list(errors)
@@ -1489,7 +1489,7 @@ def run2(_sleep=time.sleep, max_loops=None):
         save()
         _clear_relay2(seq)
         return 0
-    cap = int(cfg.get("daily_cap_h", 12)) * 60
+    cap = int(cfg.get("daily_cap_h", 20)) * 60
     if minutes_today(st) >= cap:
         log("relay2: daily cap reached -> exit")
         st.update(status="idle", error="Relay 2 ka daily cap poora ho gaya", heartbeat=0)
