@@ -744,12 +744,24 @@ def logo_probe(hls):
         return None
 
 
+FB_CFG = {"r1": True, "r2": True}      # dashboard switches (cfg["fb"]); default on, so the secret alone still works
+
+
+def fb_key_set():
+    return bool(os.environ.get("FB_STREAM_KEY_2" if SLOT == "2" else "FB_STREAM_KEY", "").strip())
+
+
+def fb_cfg_apply(cfg):
+    f = (cfg or {}).get("fb") or {}
+    FB_CFG["r1"], FB_CFG["r2"] = bool(f.get("r1", True)), bool(f.get("r2", True))
+
+
 def fb_rtmp():
     """Facebook Page output (opt-in). Returns rtmps URL or None.
     Relay 1 uses secret FB_STREAM_KEY, relay 2 uses FB_STREAM_KEY_2 (a live key can only carry one stream at a time,
     so relay 2 needs its own FB key/live). Unset = no Facebook for that relay. FB_ENABLE=off kills both."""
     key = os.environ.get("FB_STREAM_KEY_2" if SLOT == "2" else "FB_STREAM_KEY", "").strip()
-    if not key or os.environ.get("FB_ENABLE", "on").strip().lower() == "off":
+    if not key or os.environ.get("FB_ENABLE", "on").strip().lower() == "off" or not FB_CFG["r2" if SLOT == "2" else "r1"]:
         return None
     base = os.environ.get("FB_RTMP_BASE", "rtmps://live-api-s.facebook.com:443/rtmp").rstrip("/")
     return base + "/" + key
@@ -1111,6 +1123,22 @@ class Relay:
         self.proc = None
         r["retry_at"], r["probe_fail"] = time.time() + KICK_DOWN_SECS, 0
 
+    def fb_sync(self):
+        """Dashboard flipped Facebook on/off while ffmpeg runs: restart ffmpeg once on the same source (a few seconds of blip)."""
+        self.st["fb_key"] = fb_key_set()
+        if self.proc is not None and self.proc.poll() is None and "fb_on" in self.st \
+                and bool(fb_rtmp()) != bool(self.st.get("fb_on")):
+            log("facebook %s -> restart ffmpeg" % ("ON" if fb_rtmp() else "OFF"))
+            self.restarts = max(0, self.restarts - 1)       # a deliberate restart must not eat the failure budget
+            try:
+                self.proc.terminate()
+                self.proc.wait(5)
+            except Exception:
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
+
     def stop(self, outcome="stopped", note="manual"):
         if self.st.get("relay"):
             self._finish(outcome, note)
@@ -1245,6 +1273,7 @@ def run(_sleep=time.sleep, _read=None, _write=None, _relay_factory=None, _detect
     st, st_sha = _read(ST_PATH)
     st = st or {}
     st["run_started"] = int(time.time())
+    st["fb_key"] = fb_key_set()
     # an interrupted previous run may have left a relay record: close it, new run resumes from live list
     if st.get("relay"):
         st["history"] = st.get("history", [])
@@ -1277,6 +1306,9 @@ def run(_sleep=time.sleep, _read=None, _write=None, _relay_factory=None, _detect
                 relay.stop("stopped", "mirror off")
                 break
             st["poll_secs"] = int(cfg.get("poll_secs", 60))
+            fb_cfg_apply(cfg)
+            if hasattr(relay, "fb_sync"):
+                relay.fb_sync()
             relay.manual = (cfg.get("mode") == "manual")
             relay.verify = det.is_live
             st["mode"] = "manual" if relay.manual else "auto"
@@ -1397,6 +1429,7 @@ def run2(_sleep=time.sleep, max_loops=None):
     seq = r2.get("seq")
     st, st_sha = read_json(ST2_PATH)
     st = st or {}
+    st["fb_key"] = fb_key_set()
     st.update(slot=2, run_started=int(time.time()), status="starting", error="")
     if st.get("relay"):                                    # interrupted previous run
         st.setdefault("history", []).insert(0, {**{k: st["relay"].get(k) for k in ("video_id", "title", "channel", "started")},
@@ -1475,6 +1508,8 @@ def run2(_sleep=time.sleep, max_loops=None):
             last_cfg = now
             try:
                 c2 = read_json(CFG_PATH)[0] or {}
+                fb_cfg_apply(c2)
+                relay.fb_sync()
                 cur = c2.get("relay2") or {}
                 cap = int(c2.get("daily_cap_h", cap // 60)) * 60
             except Exception:
