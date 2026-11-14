@@ -1,0 +1,33 @@
+name: YT OAuth helper (manual)
+on:
+  workflow_dispatch:
+    inputs:
+      code:
+        description: "empty = make consent URL; otherwise the authorization code (or whole redirected URL)"
+        required: false
+        default: ""
+permissions:
+  contents: write
+jobs:
+  oauth:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q pynacl
+      - name: Run
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          CODE: ${{ github.event.inputs.code }}
+        run: |
+          if [ -z "$CODE" ]; then python oauth_helper.py url; else python oauth_helper.py exchange "$CODE"; fi
+      - name: Publish result to ytm-diag branch
+        if: always()
+        run: |
+          git config user.name "ytm-diag"; git config user.email "diag@users.noreply.github.com"
+          mkdir -p /tmp/o && cp diag_out.json /tmp/o/
+          git checkout --orphan ytm-diag && git rm -rf . -q && cp /tmp/o/diag_out.json . && git add diag_out.json
+          git commit -qm "oauth result" && git push -f origin ytm-diag
