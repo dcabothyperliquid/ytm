@@ -289,6 +289,18 @@ def caption_from(src, channel=""):
     return title.strip(), "\n".join(desc)
 
 
+def _errtxt(e):
+    """short, readable reason incl. the YouTube error body (reason/message), for state + logs"""
+    try:
+        body = e.read().decode("utf8", "ignore") if hasattr(e, "read") else ""
+        j = json.loads(body) if body.strip().startswith("{") else {}
+        er = (j.get("error") or {}) if isinstance(j, dict) else {}
+        why = ",".join(x.get("reason", "") for x in (er.get("errors") or [])[:2]) or er.get("status", "")
+        return ("%s %s %s" % (getattr(e, "code", ""), why, (er.get("message") or body)[:160])).strip()
+    except Exception:
+        return str(e)[:200]
+
+
 AUTH = {"dead": False}
 AUTH_MSG = ("YouTube login expire ho gaya (invalid_grant) - GitHub secret YT_REFRESH_TOKEN naya banao. "
             "Tab tak broadcast title/end-live kaam nahi karega aur naya match start nahi hoga (purane broadcast me mix na ho).")
@@ -901,8 +913,10 @@ class Relay:
         prep = None
         try:
             prep = prepare_broadcast(c["title"], c["channel"])
+            self.st.pop("prep_err", None)
         except Exception as e:
-            log("prepare broadcast failed: %s" % str(e)[:120])
+            self.st["prep_err"] = _errtxt(e)
+            log("prepare broadcast failed: %s" % self.st["prep_err"])
         self._cur_vid = c["video_id"]
         self.proc = self._spawn(hls)
         self.st["relay"] = {"video_id": c["video_id"], "title": c["title"], "channel": c["channel"],
@@ -1019,7 +1033,8 @@ class Relay:
         try:
             res = (_set or set_caption)(r.get("title", ""), r.get("channel", ""))
         except Exception as e:
-            log("caption error: %s" % str(e)[:120])
+            r["caption_err"] = _errtxt(e)               # visible in ytm_state.json (was only in the Actions log)
+            log("caption error: %s" % r["caption_err"])
             res = "wait"
         if res == "done":
             r["yt_live"] = True                         # dashboard: really LIVE on YouTube
