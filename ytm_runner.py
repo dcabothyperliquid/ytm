@@ -1460,6 +1460,7 @@ def run2(_sleep=time.sleep, max_loops=None):
     (cfg.relay2 removed / replaced) or the 6h job limit hits. No auto-pick, no failover, no chaining."""
     cfg, _ = read_json(CFG_PATH)
     cfg = cfg or {}
+    fb_cfg_apply(cfg)                                       # dashboard platform switches BEFORE the first ffmpeg spawn
     r2 = cfg.get("relay2") or {}
     if not r2.get("video_id"):
         log("relay2: no request -> exit")
