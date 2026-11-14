@@ -210,11 +210,18 @@ def banner_onsets(frames):
     return out
 
 
-def align_events(events, onsets, default_lag=8.0, back=2.0, state_ts=None):
+# The SIX / FOUR / WICKET graphic shows AFTER the ball has been played (measured on the 2026-11-14 match, frame by frame):
+# six ~9 s after the shot (ball flight + landing first), four ~10 s, wicket 10-18 s (catch / celebration first). The old
+# back=2.0 put the "hit" 7-16 s too late, so every clip started with the ball already in the air / the players celebrating.
+BACK_BY_KIND = {"six": 9.0, "four": 9.5, "wicket": 13.0}
+
+
+def align_events(events, onsets, default_lag=8.0, back=None, state_ts=None):
     """Put every event at the moment the ball was hit, not when the operator typed the score.
     The scoreboard updates several seconds AFTER the shot; the SIX / FOUR / WICKET graphic comes right after it.
     For events that have a matching graphic: t = graphic onset - `back`. The median (score - ball) delay of those is applied to
     the others (wide / no ball / dot)."""
+    bk = dict(BACK_BY_KIND) if back is None else ({k: float(back) for k in BACK_BY_KIND} if not isinstance(back, dict) else dict(back))
     col, last_on = [], {}
     for tb, k in sorted(onsets):                           # same graphic again within 20 s = replay / repeat, not a new ball
         if tb - last_on.get(k, -999.0) >= 20.0:
@@ -227,7 +234,7 @@ def align_events(events, onsets, default_lag=8.0, back=2.0, state_ts=None):
             cand = [(abs(e["t_state"] - tb), tb) for tb, k in onsets if k == e["kind"] and e["t_state"] - 30.0 <= tb <= e["t_state"] + 4.0]
             if cand:
                 tb = min(cand)[1]
-                e["t_hit"] = max(0.0, tb - back)
+                e["t_hit"] = max(0.0, tb - bk.get(k, 2.0))
                 lags.append(e["t_state"] - e["t_hit"])
     lags.sort()
     lag = min(20.0, max(3.0, lags[len(lags) // 2])) if len(lags) >= 3 else default_lag
@@ -240,13 +247,13 @@ def align_events(events, onsets, default_lag=8.0, back=2.0, state_ts=None):
     # SIX / FOUR / WICKET graphic still shows for every one of them -> a graphic with no event near it IS an event
     added = 0
     for tb, k in onsets:
-        if any(e["kind"] == k and abs(e["t_hit"] - (tb - back)) <= 30.0 for e in events):
+        if any(e["kind"] == k and abs(e["t_hit"] - (tb - bk.get(k, 2.0))) <= 30.0 for e in events):
             continue
         # a graphic with the score frozen all around it (crowd on the pitch, operator testing) is not a ball: the scoreboard
         # must change within 45 s before / 90 s after it (the operator types the score up to ~2-3 balls late)
         if state_ts is not None and not any(tb - 45.0 <= st <= tb + 90.0 for st in state_ts):
             continue
-        events.append({"kind": k, "t": max(0.0, tb - back), "t_end": max(0.0, tb - back), "t_hit": max(0.0, tb - back),
+        events.append({"kind": k, "t": max(0.0, tb - bk.get(k, 2.0)), "t_end": max(0.0, tb - bk.get(k, 2.0)), "t_hit": max(0.0, tb - bk.get(k, 2.0)),
                        "t_state": tb + lag, "inn": (min(events, key=lambda e: abs(e["t_hit"] - tb))["inn"] if events else 0),
                        "balls": 0, "mx": 0, "text": "graphic %s" % k, "db": 0.0, "from_banner": True})
         added += 1

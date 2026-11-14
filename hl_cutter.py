@@ -53,20 +53,27 @@ PLAY_RX = re.compile(r"\b(?:four|six|run|runs|over|ball|wicket|single)\b|चौ�
 PAD = {"wicket": (6, 11), "six": (6, 9), "four": (5, 6), "noball": (4, 5), "wide": (3, 4), "dot": (3, 4)}
 # scoreboard mode: events sit at the moment the ball was HIT (see hl_scoreboard.align_events), so the clip is
 # "bowler runs in -> shot -> commentary of that ball" and then it cuts to the next four / six / wicket:
-PAD_SB = {"wicket": (5, 4), "six": (4, 3), "four": (4, 3), "noball": (3, 3), "wide": (3, 2), "dot": (3, 2)}   # 2026-11-14: six/four ~7 s, wicket ~9 s
+PAD_SB = {"wicket": (5, 6), "six": (4, 5), "four": (4, 4), "noball": (3, 3), "wide": (3, 2), "dot": (3, 2)}   # t = the SHOT (banner - 9..13 s): six 9 s = run-up, shot, flight; four 8 s; wicket 11 s
 SIX_REPLAY = 10             # extra seconds after a TOP six (replay usually follows within ~10-25 s)
 TOP_SIXES = 3
 MUST = ("wicket", "six", "noball", "wide")
 DEATH_FRAC = 0.18           # last 18% of an innings = death overs
 FILL_GAP = 100              # s without any clip in the early overs -> add one dot ball as filler
 TOSS_MAX = 90.0
-TOSS_SB_MAX = 45.0            # scoreboard mode: toss banner + decision, measured from the banner onset
+TOSS_SB_MAX = 40.0            # scoreboard mode: toss banner + decision, measured from the banner onset
 END_MAX = 360.0
 SNAP_BACK_MAX = 3.0          # a clip may start up to this much earlier so the commentator's sentence is heard from its first word
 SNAP_FWD_MAX = 4.0          # ... and end up to this much later so his sentence is finished (after a four / six / wicket)
 SNAP_TAIL = 0.7              # s of breathing room after the last word of the sentence
 SNAP_PAD = 14.0              # transcribe this much around every planned clip (scoreboard mode has no whole-match transcript)
-SB_END_MAX = 240.0           # scoreboard mode: the last over (+ win + ~45 s celebration) is kept whole, up to this long
+SB_END_MAX = float(os.environ.get("HL_END_MAX", "120"))   # scoreboard mode: the last over (+ win + ~45 s celebration), up to this long (was 240: 3:47 block alone; 120 = last over tail + win + celebration)
+# LENGTH BUDGET (decided 2026-11-14 by Naem: 6-8 min highlight, "jyada lamba sahi nahi hota"):
+#   wickets / no-balls / toss / finish are NEVER dropped; 3+ consecutive boundaries (hat-trick of six / four) are never dropped;
+#   everything else is trimmed until the ESTIMATED final length (after replay cut + sentence snap) is <= HL_MAX_S.
+MAX_S = float(os.environ.get("HL_MAX_S", "430"))           # estimated final seconds -> real result lands in 6-8 min
+HARD_S = float(os.environ.get("HL_HARD_S", "460"))         # est. seconds above which streaks are thinned below a hat-trick (6-8 min promise)
+SNAP_GROWTH = 1.2                                         # measured 2026-11-14: planned 7 s ball clips end up ~9.4 s after sentence snapping
+STREAK_KEEP = 3                                           # this many consecutive six / four balls = a streak that is always shown
 
 
 # ---------------------------------------------------------------- transcript
@@ -252,36 +259,70 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
     def length(cs):
         return sum(c["end"] - c["start"] for c in cs)
 
-    dropped = {"filler_dot": 0, "four": 0, "death_dot": 0, "replay": 0, "wide": 0}
-    # ---- length control: never the must-keep set
-    if length(clips) > target_s:
-        for c in [c for c in clips if c.get("filler")]:
-            if length(clips) <= target_s:
-                break
-            clips.remove(c)
-            dropped["filler_dot"] += 1
-    # FOURS ARE NEVER DROPPED (decided 2026-11-14: every four / six / wicket is shown; a reel that is too long is fine).
-    # Only filler dots, death dots, replays and plain wides are trimmed to the budget.
-    if length(clips) > target_s:
-        for c in sorted([c for c in clips if c.get("death")], key=lambda c: c["db"]):
-            if length(clips) <= target_s:
-                break
-            clips.remove(c)
-            dropped["death_dot"] += 1
-    if length(clips) > target_s:
-        for c in [c for c in clips if c.get("replay")]:
-            if length(clips) <= target_s:
-                break
-            c["end"] -= SIX_REPLAY
-            c["replay"] = False
-            dropped["replay"] += 1
+    def est(cs):
+        """estimated FINAL length: ball clips grow ~30 % in sentence snapping, toss / finish do not"""
+        return sum((c["end"] - c["start"]) * (1.0 if c["event"] in ("toss", "finish") else SNAP_GROWTH) for c in cs)
 
-    if length(clips) > target_s:                      # last resort before the must-keep wickets / sixes / no-balls: plain wides
-        for c in [c for c in clips if c["event"] == "wide"]:
-            if length(clips) <= target_s:
-                break
+    dropped = {"filler_dot": 0, "death_dot": 0, "wide": 0, "replay": 0, "four": 0, "six": 0}
+
+    def drop_where(pred, key, order=None, limit=None):
+        limit = MAX_S if limit is None else limit
+        for c in sorted([c for c in clips if pred(c)], key=order or (lambda c: c.get("db", 0.0))):
+            if est(clips) <= limit:
+                return
             clips.remove(c)
-            dropped["wide"] += 1
+            dropped[key] += 1
+
+    # streaks: consecutive legal balls that were all a six / four. Needs the scoreboard ball counter (sb mode); without it every
+    # boundary counts as a single one.
+    bnd = sorted([e for e in ev if e["kind"] in ("six", "four") and e.get("balls")], key=lambda e: (e.get("inn", 0), e["balls"]))
+    streak_of = {}
+    i = 0
+    while i < len(bnd):
+        j = i
+        while j + 1 < len(bnd) and bnd[j + 1].get("inn", 0) == bnd[i].get("inn", 0) and bnd[j + 1]["balls"] - bnd[j]["balls"] == 1:
+            j += 1
+        for k in range(i, j + 1):
+            streak_of[round(bnd[k]["t"], 2)] = (j - i + 1, "%d:%d" % (bnd[i].get("inn", 0), bnd[i]["balls"]))
+        i = j + 1
+    for c in clips:
+        if c["event"] in ("six", "four"):
+            c["streak"], c["sid"] = streak_of.get(round(c.get("t", -1.0), 2), (1, None))
+
+    # ---- length control, in this order. NEVER dropped: wickets, no-balls, toss, finish, and at least one ball of every
+    # streak of consecutive six / four balls (a hat-trick of boundaries is always represented).
+    drop_where(lambda c: c.get("filler"), "filler_dot")
+    drop_where(lambda c: c.get("death"), "death_dot")
+    drop_where(lambda c: c["event"] == "wide", "wide")
+    for c in [c for c in clips if c.get("replay")]:                # shorten replayed top sixes before dropping real balls
+        if est(clips) <= MAX_S:
+            break
+        c["end"] -= SIX_REPLAY
+        c["replay"] = False
+        dropped["replay"] += 1
+    drop_where(lambda c: c["event"] == "four" and c.get("streak", 1) == 1, "four")      # single fours first (quietest first)
+    drop_where(lambda c: c["event"] == "six" and c.get("streak", 1) == 1, "six")        # then single sixes (quietest first)
+
+    groups = {}
+    for c in clips:
+        if c.get("sid") is not None:
+            groups.setdefault(c["sid"], []).append(c)
+
+    def thin(max_keep, limit):
+        """cut every streak longer than max_keep down to its max_keep loudest balls (longest streaks first, quietest ball first);
+        stops as soon as the estimate is <= limit. A streak never drops below max_keep >= 1."""
+        for sid, cs in sorted(groups.items(), key=lambda kv: -len([c for c in kv[1] if c in clips])):
+            alive = [c for c in cs if c in clips]
+            for c in sorted(alive, key=lambda c: (c.get("db", 0.0), c["start"]))[:max(0, len(alive) - max_keep)]:
+                if est(clips) <= limit:
+                    return
+                clips.remove(c)
+                dropped["four" if c["event"] == "four" else "six"] += 1
+
+    thin(STREAK_KEEP, MAX_S)          # a streak of 4+ is shown as a hat-trick (3 loudest)
+    thin(2, HARD_S)                   # still over the ceiling: every streak gets its 2 loudest
+    thin(1, HARD_S)                   # last resort: 1 ball per streak (the streak is still shown)
+    # wickets / no-balls / toss / finish stay even if that is over the ceiling
 
     # ---- merge overlaps (keep the strongest label), chronological
     clips.sort(key=lambda c: c["start"])
@@ -382,6 +423,7 @@ def transcribe_ranges(H, wav, ranges, dur):
 # ---------------------------------------------------------------- replay removal
 REPLAY_FPS = 2
 REPLAY_MIN = 1.5            # s: shorter "replay" colour flashes are ignored
+REPLAY_CARD_LEAD = 2.2      # s: the full-screen blue REPLAY swoosh card shows 1.4-2.0 s BEFORE the bottom bar (measured on 87 card runs) -> cut it too
 REPLAY_KEEP_MAX = 16.0      # a kept replay (TOP sixes only) may run this long after the live ball
 PIECE_MIN = 2.5             # a piece left over between two replays shorter than this is dropped
 
@@ -425,7 +467,13 @@ def replay_spans(src, ranges, fps=REPLAY_FPS):
             out[-1] = (out[-1][0], max(out[-1][1], s_[1]))
         else:
             out.append(s_)
-    return out
+    # the blue full-screen REPLAY swoosh card comes REPLAY_CARD_LEAD s before the bar: pull every span start back over it
+    # (never into the previous span), so no clip starts / ends on the card
+    res = []
+    for a_, b_ in out:
+        a2 = max(a_ - REPLAY_CARD_LEAD, res[-1][1] + 0.1 if res else 0.0)
+        res.append((min(a2, a_), b_))
+    return res
 
 
 def apply_replay_cut(plan, spans, dur):
@@ -459,6 +507,8 @@ def apply_replay_cut(plan, spans, dur):
         good = [p for p in pieces if p[1] - p[0] >= PIECE_MIN]
         if not good and pieces:
             good = [max(pieces, key=lambda p: p[1] - p[0])]        # never lose the event itself
+        if not good:                                               # the whole clip sits inside a replay: keep it uncut rather than lose a wicket / six
+            good = [[a, b, 0.0, dur]]
         for p in good:
             c = dict(s_)
             c["start"], c["end"], c["lo"], c["hi"] = p[0], p[1], p[2], p[3]
@@ -469,7 +519,7 @@ def apply_replay_cut(plan, spans, dur):
     return plan
 
 
-LIVE_BACK = 8.0             # s: the live ball (shot) happens this long BEFORE its REPLAY card first shows
+LIVE_BACK = 9.8             # s: the live ball (shot) happens this long BEFORE the replay (bar start - REPLAY_CARD_LEAD) shows; was 8.0 with bar-start spans
 
 
 def anchor_events(events, spans):
