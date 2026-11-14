@@ -83,6 +83,8 @@ jobs:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           YT_STREAM_KEY: ${{ secrets.YT_STREAM_KEY }}
           YT_STREAM_KEY_2: ${{ secrets.YT_STREAM_KEY_2 }}
+          FB_STREAM_KEY_2: ${{ secrets.FB_STREAM_KEY_2 }}  # optional: relay 2 -> Facebook (needs its own key). Unset = YouTube only.
+          FB_ENABLE: ${{ vars.FB_ENABLE || 'on' }}
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}

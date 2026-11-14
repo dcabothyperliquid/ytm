@@ -746,9 +746,10 @@ def logo_probe(hls):
 
 def fb_rtmp():
     """Facebook Page output (opt-in). Returns rtmps URL or None.
-    On only when secret FB_STREAM_KEY is set; relay 1 only (relay 2 is a separate YouTube stream); FB_ENABLE=off kills it."""
-    key = os.environ.get("FB_STREAM_KEY", "").strip()
-    if not key or SLOT == "2" or os.environ.get("FB_ENABLE", "on").strip().lower() == "off":
+    Relay 1 uses secret FB_STREAM_KEY, relay 2 uses FB_STREAM_KEY_2 (a live key can only carry one stream at a time,
+    so relay 2 needs its own FB key/live). Unset = no Facebook for that relay. FB_ENABLE=off kills both."""
+    key = os.environ.get("FB_STREAM_KEY_2" if SLOT == "2" else "FB_STREAM_KEY", "").strip()
+    if not key or os.environ.get("FB_ENABLE", "on").strip().lower() == "off":
         return None
     base = os.environ.get("FB_RTMP_BASE", "rtmps://live-api-s.facebook.com:443/rtmp").rstrip("/")
     return base + "/" + key

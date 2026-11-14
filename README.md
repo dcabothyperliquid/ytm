@@ -58,3 +58,4 @@ A Facebook failure is ignored by ffmpeg, so it can never stop the YouTube relay.
 1. Facebook Page -> Meta Business Suite / Live Producer -> **Streaming software** -> copy the **persistent stream key**.
 2. Repo secret `FB_STREAM_KEY` = that key. (Remove it, or set repo variable `FB_ENABLE=off`, to stop Facebook.)
 3. When FB is on, video bitrate is capped at 4 Mbps (Facebook limit at 720p). State shows `fb_on` / `fb_dropped`.
+4. **Relay 2 -> Facebook:** secret `FB_STREAM_KEY_2` (a second, different Facebook stream key: one key carries one live at a time, so use another Page/Live Producer key). Unset = relay 2 stays YouTube only.
