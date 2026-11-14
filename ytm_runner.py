@@ -289,14 +289,32 @@ def caption_from(src, channel=""):
     return title.strip(), "\n".join(desc)
 
 
+AUTH = {"dead": False}
+AUTH_MSG = ("YouTube login expire ho gaya (invalid_grant) - GitHub secret YT_REFRESH_TOKEN naya banao. "
+            "Tab tak broadcast title/end-live kaam nahi karega aur naya match start nahi hoga (purane broadcast me mix na ho).")
+
+
 def _oauth_token():
     cid, sec, rt = (os.environ.get(k, "").strip() for k in ("YT_CLIENT_ID", "YT_CLIENT_SECRET", "YT_REFRESH_TOKEN"))
     if not (cid and sec and rt):
         return None
     data = urllib.parse.urlencode({"client_id": cid, "client_secret": sec, "refresh_token": rt,
                                    "grant_type": "refresh_token"}).encode()
-    with urllib.request.urlopen(urllib.request.Request("https://oauth2.googleapis.com/token", data=data), timeout=20) as r:
-        return json.loads(r.read())["access_token"]
+    try:
+        with urllib.request.urlopen(urllib.request.Request("https://oauth2.googleapis.com/token", data=data), timeout=20) as r:
+            tok = json.loads(r.read())["access_token"]
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode("utf8", "ignore")
+        except Exception:
+            body = ""
+        if e.code in (400, 401) and "invalid_grant" in body:
+            if not AUTH["dead"]:
+                log("YouTube OAuth: invalid_grant (refresh token expired/revoked)")
+            AUTH["dead"] = True                      # dashboard shows AUTH_MSG; new matches are held back (see Relay._clear_stale)
+        raise
+    AUTH["dead"] = False
+    return tok
 
 
 DIAG = {}
@@ -420,7 +438,9 @@ def _prepare(call, src_title, channel):
         DIAG["sid"] = mine["id"]
     lb = call("GET", "liveBroadcasts", {"part": "snippet,status,contentDetails", "mine": "true", "maxResults": 25}).get("items", [])
     lb = _mine_only(lb, mine["id"] if mine else None)
-    bc = next((i for i in lb if i["status"].get("lifeCycleStatus") in ("created", "ready", "testing", "liveStarting", "live")), None)
+    ended = DIAG.get("ended_ids", set())             # a broadcast we just completed may still read 'live' for a few seconds: never reuse it
+    bc = next((i for i in lb if i["id"] not in ended
+               and i["status"].get("lifeCycleStatus") in ("created", "ready", "testing", "liveStarting", "live")), None)
     changed = False
     if bc is None:
         title, desc = caption_from(src_title, channel)
@@ -533,7 +553,7 @@ def end_broadcast():
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.loads(r.read() or b"{}")
 
-    n = 0
+    n = bad = 0
     try:
         sid = _my_stream_id(call)
         if SLOT == "2" and not sid:
@@ -547,12 +567,13 @@ def end_broadcast():
                 DIAG.setdefault("ended_ids", set()).add(it["id"])
                 n += 1
             except Exception as e:
+                bad += 1
                 log("end broadcast %s: %s" % (it["id"], str(e)[:100]))
     except Exception as e:
         log("end_broadcast error: %s" % str(e)[:120])
         return "error"
-    log("broadcast(s) completed: %d" % n)
-    return "done"
+    log("broadcast(s) completed: %d%s" % (n, (" (FAILED: %d)" % bad) if bad else ""))
+    return "error" if bad else "done"
 
 
 # ── relay ────────────────────────────────────────────────────────────────
@@ -821,11 +842,18 @@ class Relay:
             except Exception:
                 self.proc.kill()
         self.proc = None
-        try:
-            if outcome in ("stopped", "ended"):      # not for "interrupted" (job chain resumes) / failover
-                end_broadcast()
-        except Exception as e:
-            log("end_broadcast: %s" % str(e)[:100])
+        if outcome in ("stopped", "ended"):          # not for "interrupted" (job chain resumes) / failover
+            try:
+                res = end_broadcast()
+            except Exception as e:
+                log("end_broadcast: %s" % str(e)[:100])
+                res = "error"
+            if res == "error" and SLOT != "2":
+                # old broadcast is still LIVE on YouTube: the next match must NOT stream into it (two matches in one video, old title)
+                self.st["pending_end"] = self.st.get("pending_end") or int(time.time())
+            elif res == "done":
+                self.st.pop("pending_end", None)
+                self.st.pop("pending_end_tries", None)
         if outcome == "ended":                        # match finished by itself -> highlights now (not on manual/cap stop)
             trigger_highlights()
         self.st.setdefault("history", []).insert(0, {
@@ -833,6 +861,29 @@ class Relay:
             "started": r.get("started"), "ended": int(time.time()), "outcome": outcome, "note": note})
         del self.st["history"][30:]
         self.st["relay"] = None
+
+    def _clear_stale(self):
+        """True = fine to start. After a failed end_broadcast (YouTube login expired / quota / API hiccup) the OLD broadcast is
+        still live: retry ending it first, and if that still fails do not start the next match (it would be mixed into the old
+        video under the old title). Transient failures give up after 5 tries so a relay is never blocked forever."""
+        if not self.st.get("pending_end") or SLOT == "2":
+            return True
+        try:
+            res = end_broadcast()
+        except Exception as e:
+            log("pending end_broadcast: %s" % str(e)[:100])
+            res = "error"
+        if res != "error":
+            self.st.pop("pending_end", None)
+            self.st.pop("pending_end_tries", None)
+            return True
+        n = self.st["pending_end_tries"] = self.st.get("pending_end_tries", 0) + 1
+        if not AUTH["dead"] and n >= 5:
+            log("pending end_broadcast failed %dx (not an auth problem) -> starting anyway" % n)
+            self.st.pop("pending_end", None)
+            self.st.pop("pending_end_tries", None)
+            return True
+        return False
 
     def start(self, c):
         try:
@@ -842,6 +893,9 @@ class Relay:
             return
         if not is_live or not hls:
             return                       # not actually live (yet); try again next cycle
+        if not self._clear_stale():
+            log("hold: old YouTube broadcast could not be ended -> not starting " + c["title"][:60])
+            return
         log("relay start: " + c["title"][:80])
         self.restarts = 0
         prep = None
@@ -952,6 +1006,9 @@ class Relay:
     def caption_tick(self, now, _set=None):
         """Retry every ~25s (max 12x) until our broadcast is active, then set title/description once."""
         r = self.st.get("relay")
+        if r and AUTH["dead"]:
+            r["caption_try"] = now                       # YouTube login dead: title/live-check cannot work, do not hammer the API
+            return
         if r and r.get("caption_done"):
             self._live_watch(now, r)
             return
@@ -1156,6 +1213,11 @@ def run(_sleep=time.sleep, _read=None, _write=None, _relay_factory=None, _detect
         st["history"].insert(0, {**{k: st["relay"].get(k) for k in ("video_id", "title", "channel", "started")},
                                  "ended": int(time.time()), "outcome": "interrupted", "note": "job chained"})
         st["relay"] = None
+    if _relay_factory is None:
+        try:
+            _oauth_token()                                # sets AUTH["dead"] right away so the dashboard shows it without waiting for a relay
+        except Exception as e:
+            log("oauth check: %s" % str(e)[:100])
     relay = (_relay_factory or Relay)(st, os.environ.get("YT_RTMP_BASE", "rtmp://a.rtmp.youtube.com/live2").rstrip("/") + "/" + key)
     det = (_detector_factory or Detector)(st)
     deadline = time.time() + MAX_RUN_MIN * 60
@@ -1193,7 +1255,12 @@ def run(_sleep=time.sleep, _read=None, _write=None, _relay_factory=None, _detect
             if minutes_today(st, now) >= int(cfg.get("daily_cap_h", 12)) * 60 and not st.get("relay"):
                 log("daily cap reached -> stop")
                 break
-        st.update(live=live, errors=errors, heartbeat=int(now),
+        shown = list(errors)
+        if st.get("pending_end") and not st.get("relay"):
+            shown.insert(0, "Purana YouTube broadcast end nahi ho paya - naya match tab tak hold par hai (purane video me mix na ho).")
+        if AUTH["dead"]:
+            shown.insert(0, AUTH_MSG)
+        st.update(live=live, errors=shown, heartbeat=int(now),
                   status="relaying" if st.get("relay") else "watching")
         sig = json.dumps({k: v for k, v in st.items() if k not in ("heartbeat", "last_check", "units_today")}, sort_keys=True)
         if sig != last_sig or now - last_write >= HEARTBEAT:
