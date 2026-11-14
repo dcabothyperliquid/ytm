@@ -49,14 +49,17 @@ PLAY_RX = re.compile(r"\b(?:four|six|run|runs|over|ball|wicket|single)\b|चौ�
 
 # clip lengths: (seconds before the event, seconds after)
 PAD = {"wicket": (6, 11), "six": (6, 9), "four": (5, 6), "noball": (4, 5), "wide": (3, 4), "dot": (3, 4)}
+# scoreboard mode: events sit at the moment the ball was HIT (see hl_scoreboard.align_events), so the clip is
+# "bowler runs in -> shot -> commentary of that ball" and then it cuts to the next four / six / wicket:
+PAD_SB = {"wicket": (8, 8), "six": (8, 6), "four": (7, 5), "noball": (6, 4), "wide": (5, 3), "dot": (6, 2)}
 SIX_REPLAY = 10             # extra seconds after a TOP six (replay usually follows within ~10-25 s)
-TOP_SIXES = 4
+TOP_SIXES = 3
 MUST = ("wicket", "six", "noball", "wide")
 DEATH_FRAC = 0.18           # last 18% of an innings = death overs
 FILL_GAP = 100              # s without any clip in the early overs -> add one dot ball as filler
 TOSS_MAX = 90.0
 END_MAX = 360.0
-SB_END_MAX = 480.0           # scoreboard mode: the last over (+ win + celebration) is kept whole, up to this long
+SB_END_MAX = 240.0           # scoreboard mode: the last over (+ win + ~45 s celebration) is kept whole, up to this long
 
 
 # ---------------------------------------------------------------- transcript
@@ -176,7 +179,7 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
         toss_clips = [(0.0, min(TOSS_MAX, dur * 0.25))]            # the window starts ~35 s before the toss banner: banner + captains + decision, uninterrupted
         play_from = toss_clips[-1][1]
         end_b = dur
-        end_a = max(play_from, sb["last_over_start"] - 8.0, dur - SB_END_MAX)   # the match-deciding over is shown complete, then win + celebration
+        end_a = max(play_from, sb["last_over_start"] - 25.0, dur - SB_END_MAX)   # the match-deciding over is shown complete, then win + celebration
         br_a, br_b = sb["break"]
         ev = [dict(e) for e in sb["events"] if play_from <= e["t"] < end_a]
         for e in ev:
@@ -204,7 +207,7 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
     for e in ev:
         if e["kind"] == "dot":
             continue
-        pa, pb = PAD[e["kind"]]
+        pa, pb = (PAD_SB if sb else PAD)[e["kind"]]
         c = {"start": max(0.0, e["t"] - pa), "end": min(end_a, e["t_end"] + pb), "event": e["kind"], "db": e["db"],
              "must": e["kind"] in MUST, "t": e["t"], "text": e["text"]}
         clips.append(c)
@@ -217,7 +220,7 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
     keep_t = sorted(c["start"] for c in clips) + [end_a]
     death_dots = [d for d in dots if in_death(d["t"])]
     for d in death_dots:
-        pa, pb = PAD["dot"]
+        pa, pb = (PAD_SB if sb else PAD)["dot"]
         clips.append({"start": max(0.0, d["t"] - pa), "end": min(end_a, d["t_end"] + pb), "event": "dot",
                       "must": False, "death": True, "db": d["db"], "t": d["t"]})
     shown = sorted((c["start"], c["end"]) for c in clips)
@@ -229,7 +232,7 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
             cand = [d for d in dots if last_end <= d["t"] <= a and not in_death(d["t"])]
             if cand:
                 d = min(cand, key=lambda x: abs(x["t"] - mid))      # first / middle / last of the stretch: closest to the middle
-                pa, pb = PAD["dot"]
+                pa, pb = (PAD_SB if sb else PAD)["dot"]
                 fillers.append({"start": max(0.0, d["t"] - pa), "end": min(end_a, d["t_end"] + pb), "event": "dot",
                                 "must": False, "filler": True, "db": d["db"], "t": d["t"]})
         last_end = max(last_end, b)
@@ -239,7 +242,7 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
     def length(cs):
         return sum(c["end"] - c["start"] for c in cs)
 
-    dropped = {"filler_dot": 0, "four": 0, "death_dot": 0, "replay": 0}
+    dropped = {"filler_dot": 0, "four": 0, "death_dot": 0, "replay": 0, "wide": 0}
     # ---- length control: never the must-keep set
     if length(clips) > target_s:
         for c in [c for c in clips if c.get("filler")]:
@@ -266,6 +269,13 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
             c["end"] -= SIX_REPLAY
             c["replay"] = False
             dropped["replay"] += 1
+
+    if length(clips) > target_s:                      # last resort before the must-keep wickets / sixes / no-balls: plain wides
+        for c in [c for c in clips if c["event"] == "wide"]:
+            if length(clips) <= target_s:
+                break
+            clips.remove(c)
+            dropped["wide"] += 1
 
     # ---- merge overlaps (keep the strongest label), chronological
     clips.sort(key=lambda c: c["start"])

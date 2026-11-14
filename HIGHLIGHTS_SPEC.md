@@ -25,6 +25,18 @@ Built 2026-11-13: `hl_cutter.py` transcribes the whole confirmed window (faster-
 
 Limits of the built version: events come from commentary keywords + audio energy (no scoreboard, no real over numbers). Innings break = longest no-play stretch; death overs = last 18% of each innings; replay = extra 10 s after the 4 loudest sixes (not detected visually); filler dots = one dot ball when 100 s pass with nothing shown. A scoreboard/OCR ball-by-ball timeline would make this exact (open work 2-3).
 
+## 2b. BALL-BY-BALL CUT RULES (DECIDED 2026-11-14 after Naem watched the first real output) — the bot must follow these
+Matches here are 6-7 over tennis-ball matches. One VOD holds several matches (Deoria = Match 10, Kaushambi = Match 11 ...): ONE highlights video PER match, never two matches in one file.
+1. **Split matches**: a new toss block is a new match if the match number ("MATCH NO. 10" -> 11) or the two team codes on the scoreboard changed, even when the previous result banner was not read (`hl_board.ident_changed`). If no "WON BY" banner was read but a next match starts and the chase was seen, the match ends at its last live-scoreboard frame.
+2. **A highlight is a list of single balls, not a stretch of play**: for every four / six / wicket / no-ball / wide show ONE short clip = bowler runs in -> shot -> the commentary of THAT ball finishes -> hard cut to the next such ball. Typical clip: six 14 s, four 12 s, wicket 16 s, wide 8 s. Never keep the camera on one ball for a minute; never skip 4-5 boundaries in a row (every four / six / wicket is shown).
+3. **Clip time = the moment the ball was HIT, not when the score changed.** The scoreboard operator types the score 6-10 s late. The SIX / FOUR / WICKET graphic (standalone word in the middle of the bottom bar) appears right after the shot: clip anchor = graphic onset - 2 s (`hl_scoreboard.align_events`). Events without a graphic use the median score->ball delay measured on the others.
+4. **Four / six are accepted from the score ONLY when exactly one legal ball passed** (score +4/+5/+6/+7 with ball counter +1). The operator sometimes updates the score once per 2-3 balls: such a jump is NOT a six. A graphic with no score event next to it still creates an event (it is the proof of that ball). Same graphic again within 20 s = replay, ignored.
+5. Dot / single balls: only as filler, and in the last 2 overs when the chase is tight (unchanged).
+6. **Toss part**: first ~90 s uninterrupted (unchanged, worked well).
+7. **End**: last over complete (from ~25 s before its first ball), winning run, then **45 s** of celebration. NOT 2-3 minutes of crowd (CELEBRATION / RESULT_TAIL = 45 s, finish block max 240 s).
+8. Length control order: filler dots -> fours (quietest first) -> death dots -> replays -> plain wides. Never wickets, sixes, no-balls.
+9. Replays: only for the 3 loudest sixes.
+
 ## 3. Open work (in order)
 1. Section download (`--download-sections`) was flaky on the 8 h VOD `L2RKN7yGSdM` (frames at different times came back identical / some failed). Switch `run_vid` to full download (<=720p) + `ffmpeg -ss/-to` trim of the confirmed window. Watch runner disk (~14 GB free).
 2. Check whether these streams show a scoreboard overlay (frames so far showed LML SPORTS / KCC logos and sponsor slates only; no scoreboard seen yet). Diag workflow: `yt-diag-frames.yml` (pushes only jpg + info.json to branch `ytm-frames`, never cookies).

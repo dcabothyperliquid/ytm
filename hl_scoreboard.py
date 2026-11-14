@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 SCAN_STEP = int(os.environ.get("HL_SCAN_STEP", "30"))       # s between frames when looking for matches in the whole VOD
 BALL_STEP = int(os.environ.get("HL_BALL_STEP", "4"))        # s between frames when reading the score inside one match
 WORKERS = max(2, min(6, (os.cpu_count() or 4)))
-RESULT_TAIL = 200.0           # s of celebration kept after the "WON BY" banner first shows (normal match)
+RESULT_TAIL = 45.0            # s of celebration kept after the "WON BY" banner first shows (normal match)
 FINAL_TAIL = 600.0            # final: keep the trophy lift too
 TOSS_BACK = 35.0              # s before the toss banner (captain / commentator talk starts earlier)
 MIN_PLAY_FRAMES = 12          # a match needs at least this many scoreboard frames before a result counts (~4 min at 20 s)
@@ -97,8 +97,51 @@ def stable_states(rows, need=2):
     return out
 
 
+def _ok_step(a, g):
+    """is scoreboard state g a believable next state after a (same innings)?"""
+    dr, dw, db = g["runs"] - a["runs"], g["wk"] - a["wk"], g["balls"] - a["balls"]
+    return 0 <= dr <= 7 * max(1, db + 1) and 0 <= dw <= 1 and 0 <= db <= 2
+
+
+def consistent_states(rows, need=2):
+    """rows [(t, runs, wk, balls, mx)] -> believable states. Within an innings runs / wickets / balls can only go up by a
+    little, so a misread number (48 -> 46 -> 48, 3 -> 8 wickets ...) is dropped instead of becoming a fake six.
+    A new innings (everything resets) or a lost track is accepted only after 3 readings in a row agree with each other."""
+    groups = []
+    i = 0
+    while i < len(rows):
+        j = i
+        while j + 1 < len(rows) and rows[j + 1][1:4] == rows[i][1:4]:
+            j += 1
+        if j - i + 1 >= need:
+            groups.append({"t": rows[i][0], "t_last": rows[j][0], "runs": rows[i][1], "wk": rows[i][2],
+                           "balls": rows[i][3], "mx": rows[i][4]})
+        i = j + 1
+    out, pend = [], []
+    for g in groups:
+        if not out:
+            out.append(g)
+            continue
+        a = out[-1]
+        if g["runs"] == a["runs"] and g["wk"] == a["wk"] and g["balls"] == a["balls"]:
+            a["t_last"] = g["t_last"]
+            pend = []
+        elif _ok_step(a, g):
+            out.append(g)
+            pend = []
+        else:
+            pend.append(g)
+            if len(pend) >= 3 and _ok_step(pend[0], pend[1]) and _ok_step(pend[1], pend[2]):
+                out.extend(pend)                 # new innings / re-synced: three readings agree
+                pend = []
+            elif len(pend) > 6:
+                pend = pend[-3:]
+    return out
+
+
 def events_from_states(states, lag=4.0):
-    """consecutive stable scoreboard states -> ball events + innings split. Pure function (unit tested)."""
+    """consecutive stable scoreboard states -> ball events + innings split. Pure function (unit tested).
+    A four / six needs exactly ONE legal ball between the two states (4+2 over two balls is not a six)."""
     events, inn = [], 0
     innings = [[]]
     prev = None
@@ -114,21 +157,96 @@ def events_from_states(states, lag=4.0):
             dr, dw, db = s["runs"] - prev["runs"], s["wk"] - prev["wk"], s["balls"] - prev["balls"]
             t = max(prev["t_last"], s["t"] - lag)
             kind = None
-            if 0 <= dw <= 2 and dw >= 1 and dr >= 0:
+            if dw == 1 and dr <= 4 and db <= 2:
                 kind = "wicket"
-            elif dw == 0 and dr in (4, 5) and db >= 1:
-                kind = "four" if dr == 4 else "four"
-            elif dw == 0 and dr == 6 and db >= 1:
+            elif dw == 0 and db == 1 and dr in (4, 5):
+                kind = "four"
+            elif dw == 0 and db == 1 and dr in (6, 7):
                 kind = "six"
-            elif dw == 0 and dr >= 1 and db == 0:
+            elif dw == 0 and db == 0 and dr >= 1:
                 kind = "noball" if dr >= 2 else "wide"
-            elif dw == 0 and dr == 0 and db >= 1:
+            elif dw == 0 and dr == 0 and db == 1:
                 kind = "dot"
-            if kind and 0 <= dr <= 8 and db <= 3:
-                events.append({"kind": kind, "t": t, "t_end": t + 2.0, "inn": inn, "balls": s["balls"], "mx": s["mx"],
+            if kind:
+                events.append({"kind": kind, "t": t, "t_end": t + 2.0, "t_state": s["t"], "inn": inn, "balls": s["balls"], "mx": s["mx"],
                                "text": "%d-%d %s" % (s["runs"], s["wk"], "%d.%d" % divmod(s["balls"], 6)), "db": 0.0})
         prev = s
     return events, innings
+
+
+# ------------------------------------------------------------------ banner (SIX / FOUR / WICKET graphic) -> real ball time
+RX_BANNER = (("six", re.compile(r"\bS[1I]X(?:ES)?\b")),
+             ("four", re.compile(r"\bF[O0]UR\b")),
+             ("wicket", re.compile(r"W[1I]CKET|\bOUT\b|B[O0]WLED|CAUGHT")))
+BANNER_BOX = (0.30, 0.885, 0.70, 0.975)          # centre of the bottom strip (fractions of the full frame)
+
+
+def banner_kind(text):
+    """the graphic is a STANDALONE word in the middle of the bar ("SIX", "WICKET"); the ticker also has "FOURS 1 SIXES 1" /
+    "NOT OUT" in longer text, so only a short text counts."""
+    t = norm(text)
+    if len(re.sub(r"[^A-Z0-9]", "", t)) > 11:
+        return None
+    for k, rx in RX_BANNER:
+        if rx.search(t):
+            return k
+    return None
+
+
+def read_banner(path):
+    Image, _ = _pil()
+    img = Image.open(path)
+    return banner_kind(_ocr_img(_box(img, BANNER_BOX), psm=7, scale=3))
+
+
+def banner_onsets(frames):
+    """[(t, kind|None)] sorted by t -> [(t_first, kind)] for every run of the same banner kind (first frame it shows)."""
+    out, last = [], None
+    for t, k in frames:
+        if k and k != last:
+            out.append((t, k))
+        last = k
+    return out
+
+
+def align_events(events, onsets, default_lag=8.0, back=2.0):
+    """Put every event at the moment the ball was hit, not when the operator typed the score.
+    The scoreboard updates several seconds AFTER the shot; the SIX / FOUR / WICKET graphic comes right after it.
+    For events that have a matching graphic: t = graphic onset - `back`. The median (score - ball) delay of those is applied to
+    the others (wide / no ball / dot)."""
+    col, last_on = [], {}
+    for tb, k in sorted(onsets):                           # same graphic again within 20 s = replay / repeat, not a new ball
+        if tb - last_on.get(k, -999.0) >= 20.0:
+            col.append((tb, k))
+        last_on[k] = tb if tb - last_on.get(k, -999.0) >= 20.0 else last_on[k]
+    onsets = col
+    lags = []
+    for e in events:
+        if e["kind"] in ("six", "four", "wicket"):
+            cand = [(abs(e["t_state"] - tb), tb) for tb, k in onsets if k == e["kind"] and e["t_state"] - 30.0 <= tb <= e["t_state"] + 4.0]
+            if cand:
+                tb = min(cand)[1]
+                e["t_hit"] = max(0.0, tb - back)
+                lags.append(e["t_state"] - e["t_hit"])
+    lags.sort()
+    lag = min(20.0, max(3.0, lags[len(lags) // 2])) if len(lags) >= 3 else default_lag
+    for e in events:
+        if "t_hit" not in e:
+            e["t_hit"] = max(0.0, e["t_state"] - lag)
+        e["t"] = e["t_hit"]
+        e["t_end"] = e["t_hit"]
+    # the operator sometimes types the score only after 2-3 balls: the state jump cannot be pinned to one ball, but the
+    # SIX / FOUR / WICKET graphic still shows for every one of them -> a graphic with no event near it IS an event
+    added = 0
+    for tb, k in onsets:
+        if any(e["kind"] == k and abs(e["t_hit"] - (tb - back)) <= 30.0 for e in events):
+            continue
+        events.append({"kind": k, "t": max(0.0, tb - back), "t_end": max(0.0, tb - back), "t_hit": max(0.0, tb - back),
+                       "t_state": tb + lag, "inn": (min(events, key=lambda e: abs(e["t_hit"] - tb))["inn"] if events else 0),
+                       "balls": 0, "mx": 0, "text": "graphic %s" % k, "db": 0.0, "from_banner": True})
+        added += 1
+    events.sort(key=lambda e: e["t"])
+    return lag, len(lags), added
 
 
 # ------------------------------------------------------------------ ffmpeg + tesseract plumbing
@@ -233,6 +351,7 @@ def analyze_window(H, src, dur):
     fr = sample_frames(src, 0.0, dur, BALL_STEP, work)
     H.log("scoreboard balls: %d frames every %ds" % (len(fr), BALL_STEP))
     done = [0]
+    banners = []
 
     def one(item):
         t, p = item
@@ -240,6 +359,11 @@ def analyze_window(H, src, dur):
             sc = read_score(p)
         except Exception:                # noqa
             sc = None
+        try:
+            bk = read_banner(p)
+        except Exception:                # noqa
+            bk = None
+        banners.append((float(t), bk))
         done[0] += 1
         if done[0] % 80 == 0:
             try:
@@ -253,7 +377,7 @@ def analyze_window(H, src, dur):
     H.log("scoreboard balls: %d readable of %d frames (%.0fs)" % (len(rows), len(fr), time.time() - t0))
     if len(rows) < 30:
         return None
-    states = stable_states(rows)
+    states = consistent_states(rows)
     events, innings = events_from_states(states)
     innings = [i for i in innings if len(i) >= 3]
     if not events or not innings:
@@ -261,6 +385,13 @@ def analyze_window(H, src, dur):
     kinds = {}
     for e in events:
         kinds[e["kind"]] = kinds.get(e["kind"], 0) + 1
+    lag, n_al, n_add = align_events(events, banner_onsets(sorted(banners)))
+    H.log("scoreboard: score->ball delay %.1fs (%d events matched to their SIX/FOUR/WICKET graphic, %d more found only by the graphic)" % (lag, n_al, n_add))
+    kinds = {}
+    for e in events:
+        kinds[e["kind"]] = kinds.get(e["kind"], 0) + 1
+    if len(innings) > 2:
+        H.log("WARNING: this window holds %d innings = more than one match; check the scout split" % len(innings))
     H.log("scoreboard events:", kinds, "innings:", [(i[0]["t"], i[-1]["t_last"], i[-1]["runs"], i[-1]["wk"]) for i in innings])
     mx = innings[0][0]["mx"]
     brk = (innings[0][-1]["t_last"], innings[1][0]["t"]) if len(innings) > 1 else (dur * 0.5 - 60, dur * 0.5 + 60)

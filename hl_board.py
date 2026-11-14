@@ -28,7 +28,7 @@ TOSS_GAP = 150          # toss frames closer than this (s) are one toss block
 PLAY_AFTER_TOSS = 30 * 60   # a toss only starts a match if live play follows within this
 MIN_PLAY_FRAMES = 8     # ~2 min of live scoreboard after the toss
 LEAD_IN = 20.0          # s before the first toss frame
-CELEBRATION = 150.0     # s after the first result banner (winning run + celebration; the banner shows a few s after the last ball)
+CELEBRATION = 45.0      # s after the first result banner (winning run + a short celebration; Naem: 3 min extra at the end was too long)
 FINAL_TAIL = 600.0      # a FINAL keeps the trophy / cup lift too
 BOARD_H = int(os.environ.get("HL_BOARD_H", "480") or 480)   # 360p was too blurry for the small banner text
 TOSS_PENDING_MAX = 360  # if "TOSS PENDING" sits longer than this before "won the toss", start 60 s before the won-toss frame
@@ -59,6 +59,41 @@ def flags(txt):
             "play": bool(OVERS_RX.search(u) or PLAYWORD_RX.search(u) or TEAMV_RX.search(u))}
 
 
+
+STOP3 = {"THE", "WON", "AND", "FOR", "TOSS", "RUN", "RUNS", "OVER", "OVERS", "NEED", "MORE", "FROM", "BALL", "BALLS", "LML", "KCC",
+         "LIVE", "WITH", "OPT", "BAT", "BOWL", "NOT", "OUT", "TOP", "WIN", "SIX", "TEN", "NEW", "ALL", "MAN", "CUP", "DAY", "MAX",
+         "AND", "ARE", "HAS", "WAS", "OFF", "ONE", "TWO", "FOUR", "FREE", "HIT", "WIDE", "SPORTS", "INDIA", "ADS", "NOW", "NEXT"}
+IDENT_WINDOW = 1200.0   # s looked at on each side of a toss block to decide whether the match changed
+
+
+def _ident(rows, a, b):
+    """what match is on screen in rows with a <= t < b -> (match_no or None, set of the 2 most frequent 3-letter team codes)."""
+    nos, codes = Counter(), Counter()
+    for t, f, txt in rows:
+        if not (a <= t < b):
+            continue
+        u = (txt or "").upper()
+        m = MATCHNO_RX.search(u)
+        if m:
+            nos[m.group(1)] += 1
+        for c in set(re.findall(r"\b[A-Z]{3}\b", u)):
+            if c not in STOP3:
+                codes[c] += 1
+    no = nos.most_common(1)[0][0] if nos and nos.most_common(1)[0][1] >= 3 else None
+    top = {c for c, n in codes.most_common(2) if n >= 4}
+    return no, top
+
+
+def ident_changed(rows, t_prev_start, t_block_first, t_block_last):
+    """True when the scoreboard shows a DIFFERENT match after this toss block than before it (other match number or other teams).
+    Used when the previous match's result banner was not read by OCR, so two matches would be glued into one window."""
+    no_a, tm_a = _ident(rows, max(t_prev_start, t_block_first - IDENT_WINDOW), t_block_first)
+    no_b, tm_b = _ident(rows, t_block_last, t_block_last + IDENT_WINDOW)
+    if no_a and no_b and no_a != no_b:
+        return True
+    return len(tm_a) >= 2 and len(tm_b) >= 2 and not (tm_a & tm_b)
+
+
 # ---------------------------------------------------------------- pure logic (unit-testable)
 def segment(rows, dur, title=""):
     """rows = [(t_seconds, flags_dict, text)] sorted by t. Returns list of match dicts."""
@@ -78,7 +113,8 @@ def segment(rows, dur, title=""):
         if n_play < MIN_PLAY_FRAMES:
             continue
         # a "toss" ticker in the middle of a match is not a new match: a real new match needs a result banner after the previous start
-        if valid and not any(f["result"] for t, f, _ in rows if valid[-1][1] < t < b[0]):
+        if valid and not any(f["result"] for t, f, _ in rows if valid[-1][1] < t < b[0]) \
+                and not ident_changed(rows, valid[-1][0], b[0], b[1]):
             continue
         valid.append(b)
 
@@ -121,6 +157,16 @@ def _one_match(rows, t_first, t_last, t_done, limit, dur, toss_seen, title=""):
         m["winner"] = ("%s WON BY %s" % (w.group(1).strip(), w.group(2).strip())) if w else res[0][2][:60]
         mid = start + (t_res - start) * 0.5
         m["chase_frames"] = sum(1 for r in span if r[0] >= mid and r[0] <= t_res and r[1]["chase"])
+    elif limit < dur and play_n >= MIN_PLAY_FRAMES and any(r[1]["chase"] for r in span):
+        # no "WON BY" banner was read, but another match starts right after and this one had a chase (2nd innings):
+        # it ended where its last live-scoreboard frame is
+        last_play = [r[0] for r in span if r[1]["play"] and r[0] < limit - 60.0]
+        if last_play:
+            m["result"] = True
+            m["result_at"] = last_play[-1]
+            m["end"] = round(min(last_play[-1] + CELEBRATION, limit - 10.0), 1)
+            m["winner"] = "(result banner nahi padha, agle match se pehle ka last ball)"
+            m["chase_frames"] = sum(1 for r in span if r[1]["chase"])
     return m
 
 
