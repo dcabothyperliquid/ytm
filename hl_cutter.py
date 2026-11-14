@@ -60,6 +60,7 @@ MUST = ("wicket", "six", "noball", "wide")
 DEATH_FRAC = 0.18           # last 18% of an innings = death overs
 FILL_GAP = 100              # s without any clip in the early overs -> add one dot ball as filler
 TOSS_MAX = 90.0
+TOSS_SB_MAX = 45.0            # scoreboard mode: toss banner + decision, measured from the banner onset
 END_MAX = 360.0
 SNAP_BACK_MAX = 8.0          # a clip may start up to this much earlier so the commentator's sentence is heard from its first word
 SNAP_FWD_MAX = 14.0          # ... and end up to this much later so his sentence is finished (after a four / six / wicket)
@@ -182,8 +183,11 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
     """-> dict(segs=[{start,end,event,...}], total, dropped={...}, info={...})
     sb = scoreboard analysis (hl_scoreboard.analyze_window): exact ball events / innings / last over instead of commentary keywords."""
     if sb:
-        toss_clips = [(0.0, min(TOSS_MAX, dur * 0.25))]            # the window starts ~35 s before the toss banner: banner + captains + decision, uninterrupted
-        play_from = toss_clips[-1][1]
+        ts = float(sb.get("toss_start") or 0.0)                     # first frame of THIS match's toss banner (the window may still open on the previous match's result)
+        first = min([e["t"] for e in sb["events"] if e["kind"] != "dot" and e["t"] > ts + 12.0] or [ts + 70.0])
+        te = min(ts + TOSS_SB_MAX, max(ts + 15.0, first - 10.0), dur * 0.25)
+        toss_clips = [(ts, te)]                                     # toss banner + captains + decision, uninterrupted
+        play_from = min(te, first - 6.0)
         end_b = dur
         end_a = max(play_from, sb["last_over_start"] - 25.0, dur - SB_END_MAX)   # the match-deciding over is shown complete, then win + celebration
         br_a, br_b = sb["break"]
@@ -294,8 +298,9 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
             if pri.get(c["event"], 0) > pri.get(o["event"], 0):
                 o["event"] = c["event"]
             o["parts"] = o.get("parts", 1) + 1
+            o["replay"] = bool(o.get("replay") or c.get("replay"))
         else:
-            out.append({"start": c["start"], "end": c["end"], "event": c["event"], "parts": 1})
+            out.append({"start": c["start"], "end": c["end"], "event": c["event"], "parts": 1, "replay": bool(c.get("replay"))})
     total = sum(o["end"] - o["start"] for o in out)
     counts = {}
     for c in clips:
@@ -337,12 +342,13 @@ def snap_plan(plan, segs, dur):
                     a = max(0.0, s["start"] - 0.3)
                 n_start += 1
                 break
+        a, b = max(a, o.get("lo", 0.0)), min(b, o.get("hi", dur))     # never back into a removed replay
         c = dict(o)
         c["start"], c["end"] = a, max(a + 1.0, b)
         out.append(c)
     merged = []
     for c in sorted(out, key=lambda c: c["start"]):
-        if merged and c["start"] <= merged[-1]["end"] + 1.5:
+        if merged and c["start"] <= merged[-1]["end"]:
             m = merged[-1]
             m["end"] = max(m["end"], c["end"])
             m["parts"] = m.get("parts", 1) + c.get("parts", 1)
@@ -377,6 +383,96 @@ def transcribe_ranges(H, wav, ranges, dur):
     return out
 
 
+# ---------------------------------------------------------------- replay removal
+REPLAY_FPS = 2
+REPLAY_MIN = 1.5            # s: shorter "replay" colour flashes are ignored
+REPLAY_KEEP_MAX = 16.0      # a kept replay (TOP sixes only) may run this long after the live ball
+PIECE_MIN = 2.5             # a piece left over between two replays shorter than this is dropped
+
+
+def replay_spans(src, ranges, fps=REPLAY_FPS):
+    """The broadcast puts a bottom bar on every replay: pink \"REPLAY\" on the left, white \"SPORTS INDIA\" box in the middle, blue
+    \"REPLAY\" on the right (live play: purple bar + yellow score box). The middle box is white (R>185) and the right end is blue
+    (B>190) only during a replay. -> [(t0, t1)] in source time, found with one tiny raw-pixel read per range (no OCR)."""
+    import subprocess
+    spans = []
+    for a, b in ranges:
+        a = max(0.0, a)
+        if b - a < 2:
+            continue
+        cmd = ["ffmpeg", "-loglevel", "error", "-ss", "%.2f" % a, "-t", "%.2f" % (b - a), "-i", src, "-an", "-sn",
+               "-vf", "fps=%d,crop=iw:ih*0.06:0:ih*0.935,scale=160:12" % fps, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+        raw = subprocess.run(cmd, capture_output=True).stdout
+        n = len(raw) // (12 * 160 * 3)
+        if not n:
+            continue
+        fr = np.frombuffer(raw[:n * 12 * 160 * 3], dtype=np.uint8).reshape(n, 12, 160, 3).astype(np.float32)
+        centre_r = fr[:, :, 64:96, 0].mean(axis=(1, 2))
+        right_b = fr[:, :, 130:158, 2].mean(axis=(1, 2))
+        flag = (centre_r > 185) & (right_b > 190)
+        i = 0
+        while i < n:
+            if flag[i]:
+                j = i
+                while j + 1 < n and (flag[j + 1] or (j + 2 < n and flag[j + 2])):      # bridge a single odd frame
+                    j += 1
+                t0, t1 = a + i / float(fps), a + (j + 1) / float(fps)
+                if t1 - t0 >= REPLAY_MIN:
+                    spans.append((t0, t1))
+                i = j + 1
+            else:
+                i += 1
+    spans.sort()
+    out = []
+    for s_ in spans:                                               # ranges overlap -> merge
+        if out and s_[0] <= out[-1][1] + 0.5:
+            out[-1] = (out[-1][0], max(out[-1][1], s_[1]))
+        else:
+            out.append(s_)
+    return out
+
+
+def apply_replay_cut(plan, spans, dur):
+    """Replays are cut out of every clip (highlight = live ball, then the next ball). Only the replayed TOP sixes keep ONE
+    replay, whole. Each piece remembers lo/hi = where the neighbouring removed replay is, so sentence snapping stays out of it."""
+    removed, kept = 0.0, 0
+    out = []
+    for s_ in plan["segs"]:
+        if s_["event"] == "toss":
+            out.append(s_)
+            continue
+        a, b = s_["start"], s_["end"]
+        sp = [x for x in spans if x[1] > a - 0.2 and x[0] < b + (REPLAY_KEEP_MAX if s_.get("replay") else 0.0)]
+        if s_.get("replay"):                                       # top six: keep the first replay that follows the live ball, whole
+            keep = next((x for x in sp if b - 12.0 <= x[0] <= b + REPLAY_KEEP_MAX), None)
+            if keep:
+                b = max(b, keep[1] + 0.4)
+                sp = [x for x in sp if x is not keep]
+                kept += 1
+        pieces, cur = [], a
+        lo = 0.0
+        for x in sorted(sp):
+            if x[0] > cur:
+                pieces.append([cur, min(x[0] - 0.15, b), lo, x[0]])
+            lo = max(lo, x[1])
+            cur = max(cur, x[1] + 0.1)
+            if x[1] <= b:
+                removed += min(x[1], b) - max(x[0], a)
+        if cur < b:
+            pieces.append([cur, b, lo, dur])
+        good = [p for p in pieces if p[1] - p[0] >= PIECE_MIN]
+        if not good and pieces:
+            good = [max(pieces, key=lambda p: p[1] - p[0])]        # never lose the event itself
+        for p in good:
+            c = dict(s_)
+            c["start"], c["end"], c["lo"], c["hi"] = p[0], p[1], p[2], p[3]
+            out.append(c)
+    plan["segs"] = out
+    plan["total"] = sum(c["end"] - c["start"] for c in out)
+    plan["info"]["replay_cut"] = {"spans": len(spans), "removed_s": round(removed), "kept_top_six": kept}
+    return plan
+
+
 def build_plan(H, wav, dur, db, target_min, hop=0.5, src=None):
     """called from hl_runner.process(): transcribe the whole window, build the plan. db = energy track (dB per hop)."""
     def energy(t):
@@ -394,7 +490,21 @@ def build_plan(H, wav, dur, db, target_min, hop=0.5, src=None):
             sb = None
         if sb and sum(1 for e in sb["events"] if e["kind"] != "dot") >= 4:
             plan = plan_from_segments([], dur, target_min * 60.0 * 1.5, energy, sb=sb)
-            try:                                                    # commentator's sentences decide where each clip starts / ends
+            try:                                                    # replays out (except a replayed top six), THEN commentary sentences decide the edges
+                H.hl_review.set_live("transcribe", "Replay dhoondh ke hata raha hai", force=True)
+                rw = []
+                for o in plan["segs"]:
+                    a, b = o["start"] - 3.0, o["end"] + REPLAY_KEEP_MAX + 2.0
+                    if rw and a <= rw[-1][1]:
+                        rw[-1] = (rw[-1][0], max(rw[-1][1], b))
+                    else:
+                        rw.append((a, b))
+                sp = replay_spans(src, rw)
+                H.log("replay bars found:", len(sp), "total %.0fs" % sum(y - x for x, y in sp))
+                plan = apply_replay_cut(plan, sp, dur)
+            except Exception as e:                                  # noqa -- a plan with replays is still a plan
+                H.log("replay cut failed:", e)
+            try:
                 prog_note = H.hl_review.set_live
                 prog_note("transcribe", "Clip edges commentary ke sentence pe set kar raha hai", force=True)
                 wins = []

@@ -352,9 +352,17 @@ def analyze_window(H, src, dur):
     H.log("scoreboard balls: %d frames every %ds" % (len(fr), BALL_STEP))
     done = [0]
     banners = []
+    toss_seen = []                      # (t, done_flag) of the first frames that show the toss banner
 
     def one(item):
         t, p = item
+        if t <= 160.0:                  # where does THIS match start? (the window may still show the previous match's result for ~30 s)
+            try:
+                fl = parse_flags(ocr_strip_text(p))
+                if fl["toss_done"] or fl["toss"]:
+                    toss_seen.append((float(t), bool(fl["toss_done"])))
+            except Exception:           # noqa
+                pass
         try:
             sc = read_score(p)
         except Exception:                # noqa
@@ -403,5 +411,10 @@ def analyze_window(H, src, dur):
         d_from = next((s["t"] for s in inn if s["balls"] >= max(0, inn[0]["mx"] - 2) * 6), None)
         if d_from is not None:
             death.append((d_from, inn[-1]["t_last"] + 1.0))
-    return {"events": events, "innings": [[i[0]["t"], i[-1]["t_last"]] for i in innings], "break": brk, "mx": mx,
+    toss_start = None
+    if toss_seen:
+        done_t = sorted(t for t, d in toss_seen if d)
+        toss_start = max(0.0, (done_t[0] if done_t else min(t for t, _ in toss_seen)) - 3.0)
+        H.log("scoreboard: toss banner first seen at %.0fs -> match starts at %.0fs" % (toss_start + 3.0, toss_start))
+    return {"toss_start": toss_start, "events": events, "innings": [[i[0]["t"], i[-1]["t_last"]] for i in innings], "break": brk, "mx": mx,
             "last_over_start": lo_t, "death": death, "kinds": kinds}
