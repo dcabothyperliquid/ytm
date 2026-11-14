@@ -8,6 +8,8 @@ Highlights CUT PLAN (see HIGHLIGHTS_SPEC.md section 2) built from the commentary
   4. SIXES   clear commentary of the whole six; a replay window is added only for the top few sixes (not all).
   5. END     last over complete + winning run + celebration (the confirmed window already ends ~45 s after the last ball).
   6. LENGTH  over budget -> drop in this order: filler dots, lowest-energy fours, death dots, six replays. Never the must-keep set.
+             NO hard cap: highlight = whole match shown well in less time, not a minute-count. Wickets / sixes / no-balls stay.
+  7. SNAP    every clip start/end moves to the commentator's sentence boundary (snap_plan), so no sentence is cut in the middle.
 
 No scoreboard / ball-by-ball API exists for these local matches, so events come from the Hindi/English commentary
 (faster-whisper over the whole window) + audio energy. Everything is a pure function of the transcript segments
@@ -54,12 +56,15 @@ PAD = {"wicket": (6, 11), "six": (6, 9), "four": (5, 6), "noball": (4, 5), "wide
 PAD_SB = {"wicket": (8, 8), "six": (8, 6), "four": (7, 5), "noball": (6, 4), "wide": (5, 3), "dot": (6, 2)}
 SIX_REPLAY = 10             # extra seconds after a TOP six (replay usually follows within ~10-25 s)
 TOP_SIXES = 3
-HARD_CAP = 1.25             # final highlight never longer than 1.25 x the target (10 min -> 12.5 min)
 MUST = ("wicket", "six", "noball", "wide")
 DEATH_FRAC = 0.18           # last 18% of an innings = death overs
 FILL_GAP = 100              # s without any clip in the early overs -> add one dot ball as filler
 TOSS_MAX = 90.0
 END_MAX = 360.0
+SNAP_BACK_MAX = 8.0          # a clip may start up to this much earlier so the commentator's sentence is heard from its first word
+SNAP_FWD_MAX = 14.0          # ... and end up to this much later so his sentence is finished (after a four / six / wicket)
+SNAP_TAIL = 0.7              # s of breathing room after the last word of the sentence
+SNAP_PAD = 14.0              # transcribe this much around every planned clip (scoreboard mode has no whole-match transcript)
 SB_END_MAX = 240.0           # scoreboard mode: the last over (+ win + ~45 s celebration) is kept whole, up to this long
 
 
@@ -278,25 +283,6 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
             clips.remove(c)
             dropped["wide"] += 1
 
-    # ---- hard cap: a high-scoring match has far more must-keep sixes / no-balls than the budget allows.
-    # Keep toss, finish and every wicket; drop the weakest no-balls, then the weakest sixes (death-over sixes and the
-    # replayed TOP sixes are the last to go), until the highlight fits HARD_CAP * target.
-    hard_s = target_s * HARD_CAP
-    dropped.update({"noball": 0, "six": 0})
-    if length(clips) > hard_s:
-        for c in sorted([c for c in clips if c["event"] == "noball"], key=lambda c: c["db"]):
-            if length(clips) <= hard_s:
-                break
-            clips.remove(c)
-            dropped["noball"] += 1
-    if length(clips) > hard_s:
-        for c in sorted([c for c in clips if c["event"] == "six"],
-                        key=lambda c: (bool(c.get("replay")), in_death(c["t"]), c["db"])):
-            if length(clips) <= hard_s:
-                break
-            clips.remove(c)
-            dropped["six"] += 1
-
     # ---- merge overlaps (keep the strongest label), chronological
     clips.sort(key=lambda c: c["start"])
     pri = {"toss": 9, "finish": 9, "wicket": 8, "six": 7, "noball": 6, "wide": 5, "four": 4, "dot": 1}
@@ -319,6 +305,78 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
                      "over_budget": total > target_s, "source": "scoreboard" if sb else "commentary"}}
 
 
+
+# ---------------------------------------------------------------- sentence snapping
+def snap_plan(plan, segs, dur):
+    """Move every clip edge onto the commentator's sentence boundary (segs = [{start,end,text}]).
+    END  : a sentence still running when the clip ends -> clip ends after that sentence (+SNAP_TAIL), at most SNAP_FWD_MAX later;
+           if it would be later than that, cut back to the end of the previous sentence instead.
+    START: clip starts inside a sentence -> start at its first word (at most SNAP_BACK_MAX earlier); if only the last
+           ~1.5 s of that sentence is left, start after it instead.
+    Nothing is dropped, so the highlight can get a bit longer than the target: complete sentences matter more than exact minutes."""
+    segs = sorted(segs, key=lambda x: x["start"])
+    out, n_end, n_start = [], 0, 0
+    for o in plan["segs"]:
+        a, b = o["start"], o["end"]
+        for s in segs:                                           # ---- end
+            if s["start"] < b - 0.3 and s["end"] > b + 0.3:
+                fwd = s["end"] + SNAP_TAIL
+                if fwd - b <= SNAP_FWD_MAX:
+                    b = min(dur, fwd)
+                else:
+                    prev = [x for x in segs if x["end"] <= b - 0.3 and b - x["end"] <= 6.0 and x["end"] > a + 4.0]
+                    if prev:
+                        b = prev[-1]["end"] + SNAP_TAIL
+                n_end += 1
+                break
+        for s in segs:                                           # ---- start
+            if s["start"] < a - 0.3 and s["end"] > a + 0.3:
+                if s["end"] - a <= 1.5 and s["end"] + 0.1 < b - 3.0:
+                    a = s["end"] + 0.1
+                elif a - s["start"] <= SNAP_BACK_MAX:
+                    a = max(0.0, s["start"] - 0.3)
+                n_start += 1
+                break
+        c = dict(o)
+        c["start"], c["end"] = a, max(a + 1.0, b)
+        out.append(c)
+    merged = []
+    for c in sorted(out, key=lambda c: c["start"]):
+        if merged and c["start"] <= merged[-1]["end"] + 1.5:
+            m = merged[-1]
+            m["end"] = max(m["end"], c["end"])
+            m["parts"] = m.get("parts", 1) + c.get("parts", 1)
+        else:
+            merged.append(c)
+    plan["segs"] = merged
+    plan["total"] = sum(c["end"] - c["start"] for c in merged)
+    plan["info"]["snapped"] = {"end": n_end, "start": n_start}
+    plan["info"]["over_budget"] = False
+    return plan
+
+
+def transcribe_ranges(H, wav, ranges, dur):
+    """whisper only on small windows (scoreboard mode): [(a,b)] -> [{start,end,text}] in match time."""
+    from faster_whisper import WhisperModel
+    model = WhisperModel(FULL_MODEL, device="cpu", compute_type="int8", cpu_threads=os.cpu_count() or 4)
+    n = os.path.getsize(wav) // 2
+    mm = np.memmap(wav, dtype=np.int16, mode="r", shape=(n,))
+    out = []
+    for a, b in ranges:
+        a, b = max(0.0, a), min(dur, b)
+        audio = np.asarray(mm[int(a * SR):int(b * SR)], dtype=np.float32) / 32768.0
+        if len(audio) < SR:
+            continue
+        try:
+            segs, _ = model.transcribe(audio, language=H.LANG, beam_size=1, vad_filter=True,
+                                       initial_prompt=H.WHISPER_HINT, condition_on_previous_text=False)
+            for x in segs:
+                out.append({"start": a + x.start, "end": a + x.end, "text": x.text.strip()})
+        except Exception as e:                                   # noqa
+            H.log("snap whisper fail %.0f-%.0f: %s" % (a, b, e))
+    return out
+
+
 def build_plan(H, wav, dur, db, target_min, hop=0.5, src=None):
     """called from hl_runner.process(): transcribe the whole window, build the plan. db = energy track (dB per hop)."""
     def energy(t):
@@ -336,12 +394,25 @@ def build_plan(H, wav, dur, db, target_min, hop=0.5, src=None):
             sb = None
         if sb and sum(1 for e in sb["events"] if e["kind"] != "dot") >= 4:
             plan = plan_from_segments([], dur, target_min * 60.0 * 1.5, energy, sb=sb)
+            try:                                                    # commentator's sentences decide where each clip starts / ends
+                prog_note = H.hl_review.set_live
+                prog_note("transcribe", "Clip edges commentary ke sentence pe set kar raha hai", force=True)
+                wins = []
+                for o in plan["segs"]:
+                    a, b = o["start"] - SNAP_PAD, o["end"] + SNAP_PAD
+                    if wins and a <= wins[-1][1]:
+                        wins[-1] = (wins[-1][0], max(wins[-1][1], b))
+                    else:
+                        wins.append((a, b))
+                plan = snap_plan(plan, transcribe_ranges(H, wav, wins, dur), dur)
+            except Exception as e:                                  # noqa -- unsnapped plan is still a valid plan
+                H.log("sentence snap failed:", e)
             H.log("cutter plan (scoreboard):", plan["info"], "dropped", plan["dropped"], "total %.0fs" % plan["total"])
             return plan
         H.log("scoreboard gave too few events -> commentary fallback")
     segs = transcribe_full(H, wav, dur, prog)
     H.log("cutter: %d transcript segments" % len(segs))
     # budget: target length x1.5 (the must-keep set may exceed it, it is never trimmed)
-    plan = plan_from_segments(segs, dur, target_min * 60.0 * 1.5, energy)
+    plan = snap_plan(plan_from_segments(segs, dur, target_min * 60.0 * 1.5, energy), segs, dur)
     H.log("cutter plan:", plan["info"], "dropped", plan["dropped"], "total %.0fs" % plan["total"])
     return plan
