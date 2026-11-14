@@ -1,0 +1,151 @@
+[hl-review] live write retry: gh failed (1): gh: is at e2a5c47ab115b86db1f1e0c0ef445626ddb92a69 but expected 470422201d3f29a62f2d3122954131147658d1b2 (HTTP 409)
+
+[hl + 224s] scoreboard: 1107 strips, OCR...
+[hl + 226s] scoreboard OCR 1/1107, 0.27s/strip, 0 timeouts
+[hl + 226s] scoreboard OCR 31/1107, 0.26s/strip, 0 timeouts
+[hl + 228s] scoreboard OCR 61/1107, 0.24s/strip, 0 timeouts
+[hl + 230s] scoreboard OCR 91/1107, 0.24s/strip, 0 timeouts
+[hl + 232s] scoreboard OCR 121/1107, 0.25s/strip, 0 timeouts
+[hl + 234s] scoreboard OCR 151/1107, 0.26s/strip, 0 timeouts
+[hl + 236s] scoreboard OCR 181/1107, 0.25s/strip, 0 timeouts
+[hl + 238s] scoreboard OCR 211/1107, 0.26s/strip, 0 timeouts
+[hl + 240s] scoreboard OCR 241/1107, 0.26s/strip, 0 timeouts
+[hl + 242s] scoreboard OCR 271/1107, 0.26s/strip, 0 timeouts
+[hl + 244s] scoreboard OCR 301/1107, 0.27s/strip, 0 timeouts
+[hl + 246s] scoreboard OCR 331/1107, 0.27s/strip, 0 timeouts
+[hl + 248s] scoreboard OCR 361/1107, 0.27s/strip, 0 timeouts
+[hl + 252s] scoreboard OCR 391/1107, 0.27s/strip, 0 timeouts
+[hl + 252s] scoreboard OCR 421/1107, 0.27s/strip, 0 timeouts
+[hl + 254s] scoreboard OCR 451/1107, 0.27s/strip, 0 timeouts
+[hl + 257s] scoreboard OCR 481/1107, 0.27s/strip, 0 timeouts
+[hl + 259s] scoreboard OCR 511/1107, 0.27s/strip, 0 timeouts
+[hl + 261s] scoreboard OCR 541/1107, 0.27s/strip, 0 timeouts
+[hl + 263s] scoreboard OCR 571/1107, 0.27s/strip, 0 timeouts
+[hl + 265s] scoreboard OCR 601/1107, 0.27s/strip, 0 timeouts
+[hl + 267s] scoreboard OCR 631/1107, 0.27s/strip, 0 timeouts
+[hl + 269s] scoreboard OCR 661/1107, 0.27s/strip, 0 timeouts
+[hl + 271s] scoreboard OCR 691/1107, 0.27s/strip, 0 timeouts
+[hl + 273s] scoreboard OCR 721/1107, 0.27s/strip, 0 timeouts
+[hl + 275s] scoreboard OCR 751/1107, 0.27s/strip, 0 timeouts
+[hl + 278s] scoreboard OCR 781/1107, 0.27s/strip, 0 timeouts
+[hl + 279s] scoreboard OCR 811/1107, 0.27s/strip, 0 timeouts
+[hl + 281s] scoreboard OCR 841/1107, 0.27s/strip, 0 timeouts
+[hl + 283s] scoreboard OCR 871/1107, 0.27s/strip, 0 timeouts
+[hl + 285s] scoreboard OCR 901/1107, 0.27s/strip, 0 timeouts
+[hl + 287s] scoreboard OCR 931/1107, 0.27s/strip, 0 timeouts
+[hl + 289s] scoreboard OCR 961/1107, 0.27s/strip, 0 timeouts
+[hl + 291s] scoreboard OCR 991/1107, 0.27s/strip, 0 timeouts
+[hl + 293s] scoreboard OCR 1021/1107, 0.27s/strip, 0 timeouts
+[hl + 295s] scoreboard OCR 1051/1107, 0.27s/strip, 0 timeouts
+[hl + 297s] scoreboard OCR 1081/1107, 0.27s/strip, 0 timeouts
+[hl + 298s] scoreboard: 740/1107 strips had scoreboard text
+::notice title=hl::scout(board) ItjKKj04ipg: pending | start 6805.0 end 13665.0 | Match 10: 0:28:10 se 1:53:00 ((result banner nahi padha, agle match se pehle ka last ball)); Match 11 <- ye wala: 1:53:25 se 3:47:45 (SATYAM 11 KAUSHAMBI WON BY 7 WICKETS R); Match 12: 3:52:25 se 4:26:45 (JAGAPUR RAHMANIPUR WON BY 9 WICKETS 5); 2nd innings ke signs (target/need) mile
+::notice title=hl::match 11 asked by hand -> making highlights now (1:53:25 - 3:47:45)
+[hl + 304s] downloading ItjKKj04ipg Prize Distribution || Mughlani Cup 2026 Live window (6805.0, 13665.0)
+[hl + 306s] full download ItjKKj04ipg (free disk 92.0 GB)
+::notice title=hl::full download ItjKKj04ipg: 3768 MB in 141s, free disk 88.2 GB
+::notice title=hl::trimmed 6805-13665 s -> 1636 MB (real start 6796.10)
+::notice title=hl::trimmed match cached in draft release hlsrc-ItjKKj04ipg-6805-13665 (edits will not re-download the VOD)
+[hl + 494s] source 114.6 min
+::notice title=hl::source 114.6 min
+[hl + 502s] audio peaks: 45 (threshold 4.0 dB over baseline)
+::notice title=hl::audio peaks 45 (thr 4.0 dB)
+[hl-review] live write retry: gh failed (1): gh: is at 9acb5d95299a79109d4806f50826c81c0b7082fb but expected 6ed2199f943d218d1e7e926044a2b35e3ba776c0 (HTTP 409)
+
+[hl + 504s] loading whisper small
+[0;93m2026-11-14 06:32:05.652256797 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+[hl + 631s] transcribed 10/45 (125s)
+[hl-review] live write retry: gh failed (1): gh: is at bb323b823c182818a65d3868154e78faacc3594a but expected 317ba6dd69ae82c69e85c4f270b198ebc080ab33 (HTTP 409)
+
+[hl + 946s] transcribed 20/45 (441s)
+[hl +1181s] transcribed 30/45 (676s)
+[hl-review] live write retry: gh failed (1): gh: is at 5181118a554c53bce51768d4d3ff20ec14ae9aa1 but expected db3deee44fafabe5c32d6b18c9ca2c62b552f60d (HTTP 409)
+
+[hl +1396s] transcribed 40/45 (890s)
+::notice title=hl::whisper small done: 45 windows in 998s
+[hl +1531s] scoreboard balls: 1718 frames every 4s
+[hl-review] live write retry: gh failed (1): gh: is at d1385f8506ce62452613ee031e870fef1a4e1688 but expected fd139f207117d3c789b731d97165bdcba5a89402 (HTTP 409)
+
+[hl +1737s] scoreboard balls: 1217 readable of 1718 frames (231s)
+[hl +1737s] scoreboard: score->ball delay 6.0s (15 events matched to their SIX/FOUR/WICKET graphic, 0 more found only by the graphic)
+[hl +1737s] scoreboard events: {'six': 32, 'four': 12, 'wide': 3, 'wicket': 10, 'dot': 7, 'noball': 1} innings: [(420.0, 4108.0, 133, 7), (4692.0, 6868.0, 135, 3)]
+[hl +1737s] scoreboard: toss banner first seen at 36s -> match starts at 33s
+[hl +1803s] replay bars found: 33 total 294s
+[hl +1803s] live-ball anchoring: moved 28 events off a replay
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[hl +3035s] cutter plan (scoreboard): {'counts': {'toss': 1, 'four': 11, 'six': 30, 'wide': 3, 'wicket': 9, 'dot': 5, 'noball': 1, 'finish': 1}, 'innings_break': [4108, 4692], 'play_from': 78, 'over_budget': False, 'source': 'scoreboard', 'replay_cut': {'spans': 32, 'removed_s': 12, 'kept_top_six': 3}, 'snapped': {'end': 27, 'start': 40}} dropped {'filler_dot': 0, 'four': 0, 'death_dot': 0, 'replay': 0, 'wide': 0} total 745s
+::notice title=hl::cut plan: {'counts': {'toss': 1, 'four': 11, 'six': 30, 'wide': 3, 'wicket': 9, 'dot': 5, 'noball': 1, 'finish': 1}, 'innings_break': [4108, 4692], 'play_from': 78, 'over_budget': False, 'source': 'scoreboard', 'replay_cut': {'spans': 32, 'removed_s': 12, 'kept_top_six': 3}, 'snapped': {'end': 27, 'start': 40}} | dropped {'filler_dot': 0, 'four': 0, 'death_dot': 0, 'replay': 0, 'wide': 0} | 745s
+[hl +3044s] highlight seg 1/62
+[hl +3046s] highlight seg 2/62
+[hl +3047s] highlight seg 3/62
+[hl +3048s] highlight seg 4/62
+[hl +3049s] highlight seg 5/62
+[hl +3050s] highlight seg 6/62
+[hl +3052s] highlight seg 7/62
+[hl +3053s] highlight seg 8/62
+[hl +3055s] highlight seg 9/62
+[hl +3057s] highlight seg 10/62
+[hl +3059s] highlight seg 11/62
+[hl +3060s] highlight seg 12/62
+[hl +3062s] highlight seg 13/62
+[hl +3064s] highlight seg 14/62
+[hl +3067s] highlight seg 15/62
+[hl +3069s] highlight seg 16/62
+[hl +3070s] highlight seg 17/62
+[hl +3072s] highlight seg 18/62
+[hl +3073s] highlight seg 19/62
+[hl +3074s] highlight seg 20/62
+[hl +3075s] highlight seg 21/62
+[hl +3077s] highlight seg 22/62
+[hl +3078s] highlight seg 23/62
+[hl +3079s] highlight seg 24/62
+[hl +3081s] highlight seg 25/62
+[hl +3082s] highlight seg 26/62
+[hl +3083s] highlight seg 27/62
+[hl +3085s] highlight seg 28/62
+[hl +3086s] highlight seg 29/62
+[hl +3087s] highlight seg 30/62
+[hl +3090s] highlight seg 31/62
+[hl +3091s] highlight seg 32/62
+[hl +3093s] highlight seg 33/62
+[hl +3095s] highlight seg 34/62
+[hl +3097s] highlight seg 35/62
+[hl +3101s] highlight seg 36/62
+[hl +3103s] highlight seg 37/62
+[hl +3104s] highlight seg 38/62
+[hl +3106s] highlight seg 39/62
+[hl +3108s] highlight seg 40/62
+[hl +3109s] highlight seg 41/62
+[hl +3110s] highlight seg 42/62
+[hl +3111s] highlight seg 43/62
+[hl +3113s] highlight seg 44/62
+[hl +3116s] highlight seg 45/62
+[hl +3118s] highlight seg 46/62
+[hl +3120s] highlight seg 47/62
+[hl +3122s] highlight seg 48/62
+[hl +3123s] highlight seg 49/62
+[hl +3125s] highlight seg 50/62
+[hl +3126s] highlight seg 51/62
+[hl +3128s] highlight seg 52/62
+[hl +3129s] highlight seg 53/62
+[hl +3130s] highlight seg 54/62
+[hl +3132s] highlight seg 55/62
+[hl +3135s] highlight seg 56/62
+[hl +3139s] highlight seg 57/62
+[hl-review] live write retry: gh failed (1): gh: is at 8ae617ba088de03fc9a3f930a065827efa751430 but expected 20c0908b805a3ed0b19bcbde76456746cd07f05c (HTTP 409)
+
+[hl +3143s] highlight seg 58/62
+[hl +3145s] highlight seg 59/62
+[hl +3147s] highlight seg 60/62
+[hl +3161s] highlight seg 61/62
+[hl +3192s] highlight seg 62/62
+[hl +3193s] stories found: 1
+::notice title=hl::stories found: 1
+[hl +3193s] shorts: 0 of 1 stories lie inside the highlights
+::notice title=hl::shorts from highlights only: 0 of 1 stories kept
+[hl +3193s] done: highlights 12:25 + 0 shorts
+::notice title=hl::rendered: highlights 12:25 + 0 shorts
+::notice title=hl::draft release created: hl-ItjKKj04ipg-m11 (3 files)
+[hl-review] state updated for ItjKKj04ipg
+::notice title=hl::previews + dashboard state updated
+[hl +3260s] disk released (2 items), free 91.9 GB
