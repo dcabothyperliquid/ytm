@@ -53,7 +53,7 @@ PLAY_RX = re.compile(r"\b(?:four|six|run|runs|over|ball|wicket|single)\b|चौ�
 PAD = {"wicket": (6, 11), "six": (6, 9), "four": (5, 6), "noball": (4, 5), "wide": (3, 4), "dot": (3, 4)}
 # scoreboard mode: events sit at the moment the ball was HIT (see hl_scoreboard.align_events), so the clip is
 # "bowler runs in -> shot -> commentary of that ball" and then it cuts to the next four / six / wicket:
-PAD_SB = {"wicket": (8, 8), "six": (8, 6), "four": (7, 5), "noball": (6, 4), "wide": (5, 3), "dot": (6, 2)}
+PAD_SB = {"wicket": (5, 4), "six": (4, 3), "four": (4, 3), "noball": (3, 3), "wide": (3, 2), "dot": (3, 2)}   # 2026-11-14: six/four ~7 s, wicket ~9 s
 SIX_REPLAY = 10             # extra seconds after a TOP six (replay usually follows within ~10-25 s)
 TOP_SIXES = 3
 MUST = ("wicket", "six", "noball", "wide")
@@ -62,8 +62,8 @@ FILL_GAP = 100              # s without any clip in the early overs -> add one d
 TOSS_MAX = 90.0
 TOSS_SB_MAX = 45.0            # scoreboard mode: toss banner + decision, measured from the banner onset
 END_MAX = 360.0
-SNAP_BACK_MAX = 8.0          # a clip may start up to this much earlier so the commentator's sentence is heard from its first word
-SNAP_FWD_MAX = 14.0          # ... and end up to this much later so his sentence is finished (after a four / six / wicket)
+SNAP_BACK_MAX = 3.0          # a clip may start up to this much earlier so the commentator's sentence is heard from its first word
+SNAP_FWD_MAX = 4.0          # ... and end up to this much later so his sentence is finished (after a four / six / wicket)
 SNAP_TAIL = 0.7              # s of breathing room after the last word of the sentence
 SNAP_PAD = 14.0              # transcribe this much around every planned clip (scoreboard mode has no whole-match transcript)
 SB_END_MAX = 240.0           # scoreboard mode: the last over (+ win + ~45 s celebration) is kept whole, up to this long
@@ -469,6 +469,27 @@ def apply_replay_cut(plan, spans, dur):
     return plan
 
 
+LIVE_BACK = 8.0             # s: the live ball (shot) happens this long BEFORE its REPLAY card first shows
+
+
+def anchor_events(events, spans):
+    """An event time that falls inside a REPLAY (or right after one) is the replay of the ball, not the live ball
+    (scoreboard / graphic timing can land on the replay). Move it back to the live ball = REPLAY start - LIVE_BACK,
+    never before the previous replay ended. -> number of events moved."""
+    sp = sorted(spans)
+    moved = 0
+    for e in sorted(events, key=lambda x: x["t"]):
+        for i, (a, b) in enumerate(sp):
+            if a - 1.0 <= e["t"] <= b + 2.0:
+                prev_end = sp[i - 1][1] if i else 0.0
+                t = max(a - LIVE_BACK, prev_end + 1.0, 0.0)
+                e["t"] = e["t_end"] = e["t_hit"] = t
+                moved += 1
+                break
+    events.sort(key=lambda x: x["t"])
+    return moved
+
+
 def build_plan(H, wav, dur, db, target_min, hop=0.5, src=None):
     """called from hl_runner.process(): transcribe the whole window, build the plan. db = energy track (dB per hop)."""
     def energy(t):
@@ -486,17 +507,25 @@ def build_plan(H, wav, dur, db, target_min, hop=0.5, src=None):
             sb = None
         if sb and sum(1 for e in sb["events"] if e["kind"] != "dot") >= 4:
             plan = plan_from_segments([], dur, target_min * 60.0 * 1.5, energy, sb=sb)
-            try:                                                    # replays out (except a replayed top six), THEN commentary sentences decide the edges
-                H.hl_review.set_live("transcribe", "Replay dhoondh ke hata raha hai", force=True)
+
+            def _spans(pl):
                 rw = []
-                for o in plan["segs"]:
+                for o in pl["segs"]:
                     a, b = o["start"] - 3.0, o["end"] + REPLAY_KEEP_MAX + 2.0
                     if rw and a <= rw[-1][1]:
                         rw[-1] = (rw[-1][0], max(rw[-1][1], b))
                     else:
                         rw.append((a, b))
-                sp = replay_spans(src, rw)
+                return replay_spans(src, rw)
+            try:                                                    # replays out (except a replayed top six), THEN commentary sentences decide the edges
+                H.hl_review.set_live("transcribe", "Replay dhoondh ke hata raha hai", force=True)
+                sp = _spans(plan)
                 H.log("replay bars found:", len(sp), "total %.0fs" % sum(y - x for x, y in sp))
+                n_mv = anchor_events(sb["events"], sp)              # events that sit on a replay -> back to the live ball
+                if n_mv:
+                    H.log("live-ball anchoring: moved", n_mv, "events off a replay")
+                    plan = plan_from_segments([], dur, target_min * 60.0 * 1.5, energy, sb=sb)
+                    sp = _spans(plan)
                 plan = apply_replay_cut(plan, sp, dur)
             except Exception as e:                                  # noqa -- a plan with replays is still a plan
                 H.log("replay cut failed:", e)
