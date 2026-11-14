@@ -62,8 +62,8 @@ FILL_GAP = 100              # s without any clip in the early overs -> add one d
 TOSS_MAX = 90.0
 TOSS_SB_MAX = 40.0            # scoreboard mode: toss banner + decision, measured from the banner onset
 END_MAX = 360.0
-SNAP_BACK_MAX = 3.0          # a clip may start up to this much earlier so the commentator's sentence is heard from its first word
-SNAP_FWD_MAX = 4.0          # ... and end up to this much later so his sentence is finished (after a four / six / wicket)
+SNAP_BACK_MAX = 4.0          # a clip may start up to this much earlier so the commentator's sentence is heard from its first word
+SNAP_FWD_MAX = 10.0         # ... and end up to this much later so his sentence is finished (after a four / six / wicket)
 SNAP_TAIL = 0.7              # s of breathing room after the last word of the sentence
 SNAP_PAD = 14.0              # transcribe this much around every planned clip (scoreboard mode has no whole-match transcript)
 SB_END_MAX = float(os.environ.get("HL_END_MAX", "120"))   # scoreboard mode: the last over (+ win + ~45 s celebration), up to this long (was 240: 3:47 block alone; 120 = last over tail + win + celebration)
@@ -72,7 +72,7 @@ SB_END_MAX = float(os.environ.get("HL_END_MAX", "120"))   # scoreboard mode: the
 #   everything else is trimmed until the ESTIMATED final length (after replay cut + sentence snap) is <= HL_MAX_S.
 MAX_S = float(os.environ.get("HL_MAX_S", "430"))           # estimated final seconds -> real result lands in 6-8 min
 HARD_S = float(os.environ.get("HL_HARD_S", "460"))         # est. seconds above which streaks are thinned below a hat-trick (6-8 min promise)
-SNAP_GROWTH = 1.2                                         # measured 2026-11-14: planned 7 s ball clips end up ~9.4 s after sentence snapping
+SNAP_GROWTH = 1.3                                         # measured 2026-11-14: planned 7 s ball clips end up ~9.4 s after sentence snapping
 STREAK_KEEP = 3                                           # this many consecutive six / four balls = a streak that is always shown
 
 
