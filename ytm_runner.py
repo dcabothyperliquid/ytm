@@ -751,9 +751,21 @@ def fb_key_set():
     return bool(os.environ.get("FB_STREAM_KEY_2" if SLOT == "2" else "FB_STREAM_KEY", "").strip())
 
 
+YT_CFG = {"r1": True, "r2": True}      # dashboard switches (cfg["yt"]): YouTube output per relay, default on
+
+
 def fb_cfg_apply(cfg):
+    """read the dashboard's per-platform switches (cfg.fb / cfg.yt) into the module state"""
     f = (cfg or {}).get("fb") or {}
     FB_CFG["r1"], FB_CFG["r2"] = bool(f.get("r1", True)), bool(f.get("r2", True))
+    y = (cfg or {}).get("yt") or {}
+    YT_CFG["r1"], YT_CFG["r2"] = bool(y.get("r1", True)), bool(y.get("r2", True))
+
+
+def outputs():
+    """-> (yt, fb_url). At least one output is always on: if the dashboard switched both off, YouTube stays (Stop is the way to end a relay)."""
+    fb = fb_rtmp()
+    return (bool(YT_CFG["r2" if SLOT == "2" else "r1"]) or not fb), fb
 
 
 def fb_rtmp():
@@ -774,14 +786,14 @@ def _tee(rtmp, fb):
 
 
 def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
-    fb = fb_rtmp()
+    yt, fb = outputs()
     base = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-stats", "-reconnect", "1", "-reconnect_streamed", "1",
             "-reconnect_delay_max", "5", "-fflags", "+genpts", "-i", hls]
     logo = os.environ.get("YTM_LOGO", "logo.png")
     if not os.path.isfile(logo):
-        if fb:
+        if fb and yt:
             return base + ["-map", "0:v?", "-map", "0:a?", "-c", "copy", "-tag:a", "10", "-f", "tee", _tee(rtmp, fb)]
-        return base + ["-c", "copy", "-f", "flv", rtmp]          # no logo file -> old behaviour (stream copy)
+        return base + ["-c", "copy", "-f", "flv", fb if fb and not yt else rtmp]          # no logo file -> old behaviour (stream copy)
     # logo mode: re-encode. Frame is forced to 1280x720, source-channel logo corners are smeared (delogo),
     # then YOUR logo goes top-right on top. YTM_DELOGO="x:y:w:h;x:y:w:h" overrides the boxes, YTM_DELOGO=off disables.
     # YTM_LOGO_POS = overlay expr (default top-right), YTM_LOGO_W = logo width px (default 150).
@@ -821,7 +833,7 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
     return (base + ["-i", logo] + (["-i", tagimg] if use_img else []) + ["-filter_complex", fc, "-map", "[v]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", os.environ.get("YTM_PRESET", "veryfast"), "-profile:v", "high", "-crf", "20",
             "-maxrate", "4000k" if fb else "6000k", "-bufsize", "8000k" if fb else "12000k",      # Facebook wants <= ~4 Mbps at 720p
-            "-g", "60", "-pix_fmt", "yuv420p", "-c:a", "copy"] + (["-tag:a", "10", "-f", "tee", _tee(rtmp, fb)] if fb else ["-f", "flv", rtmp]) + [
+            "-g", "60", "-pix_fmt", "yuv420p", "-c:a", "copy"] + (["-tag:a", "10", "-f", "tee", _tee(rtmp, fb)] if fb and yt else ["-f", "flv", fb if fb and not yt else rtmp]) + [
             "-map", "[snap]", "-q:v", "5", "-f", "image2", "-update", "1", "-y", "/tmp/ytm_frame.jpg"])
 
 
@@ -848,7 +860,8 @@ class Relay:
             else:
                 spec = logo_probe(hls)
                 self.st["logo_probe"] = {"video_id": vid, "spec": spec, "ver": LOGO_PROBE_VER, "at": int(time.time())}
-        self.st["fb_on"] = bool(fb_rtmp())
+        _y, _f = outputs()
+        self.st["fb_on"], self.st["yt_on"] = bool(_f), bool(_y)
         return self._popen(ffmpeg_cmd(hls, self.rtmp, strip, spec), stderr=self._elog)
 
     def _tail(self):
@@ -947,7 +960,7 @@ class Relay:
         self.restarts = 0
         prep = None
         try:
-            prep = prepare_broadcast(c["title"], c["channel"])
+            prep = prepare_broadcast(c["title"], c["channel"]) if outputs()[0] else "yt-off"
             self.st.pop("prep_err", None)
         except Exception as e:
             self.st["prep_err"] = _errtxt(e)
@@ -955,7 +968,7 @@ class Relay:
         self._cur_vid = c["video_id"]
         self.proc = self._spawn(hls)
         self.st["relay"] = {"video_id": c["video_id"], "title": c["title"], "channel": c["channel"],
-                            "url": c["url"], "started": int(time.time()), "not_live_since": None}
+                            "url": c["url"], "started": int(time.time()), "not_live_since": None, "yt_off": not outputs()[0]}
         if prep == "busy":
             self.st["relay"]["kick_early"] = True
 
@@ -1055,6 +1068,8 @@ class Relay:
     def caption_tick(self, now, _set=None):
         """Retry every ~25s (max 12x) until our broadcast is active, then set title/description once."""
         r = self.st.get("relay")
+        if r and r.get("yt_off"):
+            return                                       # YouTube output switched off from the dashboard: no broadcast to title/watch
         if r and AUTH["dead"]:
             r["caption_try"] = now                       # YouTube login dead: title/live-check cannot work, do not hammer the API
             return
@@ -1124,20 +1139,43 @@ class Relay:
         r["retry_at"], r["probe_fail"] = time.time() + KICK_DOWN_SECS, 0
 
     def fb_sync(self):
-        """Dashboard flipped Facebook on/off while ffmpeg runs: restart ffmpeg once on the same source (a few seconds of blip)."""
+        """Dashboard flipped YouTube and/or Facebook for this relay while ffmpeg runs: restart ffmpeg once on the same source
+        (a few seconds of blip on the platform(s) that stay on). YouTube off -> its broadcast is completed; YouTube on again ->
+        a fresh broadcast is prepared first."""
         self.st["fb_key"] = fb_key_set()
-        if self.proc is not None and self.proc.poll() is None and "fb_on" in self.st \
-                and bool(fb_rtmp()) != bool(self.st.get("fb_on")):
-            log("facebook %s -> restart ffmpeg" % ("ON" if fb_rtmp() else "OFF"))
-            self.restarts = max(0, self.restarts - 1)       # a deliberate restart must not eat the failure budget
+        if self.proc is None or self.proc.poll() is not None or "fb_on" not in self.st:
+            return
+        want_yt, want_fb = outputs()
+        want_fb = bool(want_fb)
+        have_fb, have_yt = bool(self.st.get("fb_on")), bool(self.st.get("yt_on", True))
+        if want_fb == have_fb and want_yt == have_yt:
+            return
+        r = self.st.get("relay") or {}
+        log("outputs change: YouTube %s->%s, Facebook %s->%s -> restart ffmpeg" % (have_yt, want_yt, have_fb, want_fb))
+        self.restarts = max(0, self.restarts - 1)           # a deliberate restart must not eat the failure budget
+        if want_yt and not have_yt and r:                   # YouTube back on: the broadcast must exist before ingest starts
             try:
-                self.proc.terminate()
-                self.proc.wait(5)
+                prepare_broadcast(r.get("title", ""), r.get("channel", ""))
+            except Exception as e:
+                log("prepare broadcast failed: %s" % _errtxt(e))
+            for k in ("caption_done", "kicked"):
+                r[k] = False
+            r["caption_n"], r["kick_n"], r["lv_bad"], r["caption_try"] = 0, 0, 0, 0
+            r["kick_early"], r["yt_off"], r["yt_live"] = True, False, None
+        try:
+            self.proc.terminate()
+            self.proc.wait(5)
+        except Exception:
+            try:
+                self.proc.kill()
             except Exception:
-                try:
-                    self.proc.kill()
-                except Exception:
-                    pass
+                pass
+        if have_yt and not want_yt and r:                   # YouTube switched off: complete the broadcast so the channel stops showing LIVE
+            r["yt_off"], r["yt_live"] = True, None
+            try:
+                end_broadcast()
+            except Exception as e:
+                log("end_broadcast: %s" % str(e)[:100])
 
     def stop(self, outcome="stopped", note="manual"):
         if self.st.get("relay"):
