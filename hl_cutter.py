@@ -53,7 +53,7 @@ PLAY_RX = re.compile(r"\b(?:four|six|run|runs|over|ball|wicket|single)\b|चौ�
 PAD = {"wicket": (6, 11), "six": (6, 9), "four": (5, 6), "noball": (4, 5), "wide": (3, 4), "dot": (3, 4)}
 # scoreboard mode: events sit at the moment the ball was HIT (see hl_scoreboard.align_events), so the clip is
 # "bowler runs in -> shot -> commentary of that ball" and then it cuts to the next four / six / wicket:
-PAD_SB = {"wicket": (4, 5), "six": (3, 3), "four": (2, 3), "noball": (2, 3), "wide": (2, 2), "dot": (3, 2)}   # t = the SHOT (banner - 9..13 s): six 9 s = run-up, shot, flight; four 8 s; wicket 11 s
+PAD_SB = {"wicket": (3.5, 6), "six": (3.5, 5), "four": (3.5, 4.5), "noball": (3, 3), "wide": (3, 3), "dot": (3, 2)}   # t = the exact SHOT (video cut-away, refine_shots): run-up 3.5 s before, then flight + landing (six 8.5 s, four 8 s, wicket 9.5 s)
 SIX_REPLAY = 10             # extra seconds after a TOP six (replay usually follows within ~10-25 s)
 TOP_SIXES = 1
 MUST = ("wicket", "six", "noball", "wide")
@@ -228,6 +228,8 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
         if e["kind"] == "dot":
             continue
         pa, pb = (PAD_SB if sb else PAD)[e["kind"]]
+        if sb and not e.get("exact") and e["kind"] in ("six", "four", "wicket"):      # shot time only estimated from the banner (+-5 s): wider clip
+            pa, pb = pa + 2.5, pb + 2.5
         c = {"start": max(0.0, e["t"] - pa), "end": min(end_a, e["t_end"] + pb), "event": e["kind"], "db": e["db"],
              "must": e["kind"] in MUST, "t": e["t"], "text": e["text"]}
         clips.append(c)
@@ -575,6 +577,93 @@ def anchor_events(events, spans):
     return moved
 
 
+# ---------------------------------------------------------------- exact shot time (video, not banner lag)
+SHOT_FPS = 5
+SHOT_WB = 10.0              # look this far BEFORE the estimated time ...
+SHOT_WA = 5.0               # ... and this far after it for the shot
+SHOT_PIT = 0.06             # fraction of green-mat pixels in the middle band above which the frame is the wide pitch view
+
+
+def _small_frames(src, a, b, fps=SHOT_FPS, w=64, h=36):
+    import subprocess
+    cmd = ["ffmpeg", "-loglevel", "error", "-ss", "%.2f" % a, "-t", "%.2f" % (b - a), "-i", src, "-an", "-sn",
+           "-vf", "fps=%d,scale=%d:%d" % (fps, w, h), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+    raw = subprocess.run(cmd, capture_output=True).stdout
+    n = len(raw) // (w * h * 3)
+    if not n:
+        return np.zeros(0), np.zeros((0, h, w, 3), dtype=np.int16)
+    fr = np.frombuffer(raw[:n * w * h * 3], dtype=np.uint8).reshape(n, h, w, 3).astype(np.int16)
+    return a + np.arange(n) / float(fps), fr
+
+
+def shot_time(src, t0, wb=SHOT_WB, wa=SHOT_WA, min_t=0.0, need_replay=False):
+    """The broadcast shows the ball from the wide pitch view (green mat, bowler, batter) and cuts away (sky / outfield / close-up)
+    the moment the ball is hit. The SIX / FOUR / WICKET graphic comes 7-16 s later, so a fixed lag puts clips -9..+5 s off.
+    -> time of the LAST pitch-view -> cut-away before t0+wa (not inside a replay: the replay bar is on screen), nearest to t0; None if not found."""
+    a = max(0.0, t0 - wb - 2.0)
+    t, fr = _small_frames(src, a, t0 + wa + 2.0)
+    if len(t) < 12:
+        return None
+    R, G, B = fr[..., 0], fr[..., 1], fr[..., 2]
+    mat = ((G - R) > 45) & ((G - B) > 5) & (G > 110)
+    pit = mat[:, 8:28, :].mean(axis=(1, 2)) > SHOT_PIT
+    bar = (R[:, 33:36, 26:38].mean(axis=(1, 2)) > 185) & (B[:, 33:36, 52:63].mean(axis=(1, 2)) > 190)     # REPLAY bar (white middle, blue right)
+    if need_replay:                                                 # only when the estimate sits on a replay (live ball is before it)
+        near = (t >= t0 - 3.0) & (t <= t0 + 3.0)
+        if not bar[near].any():
+            return None
+    ps = np.array([pit[max(0, i - 1):i + 2].sum() >= 2 for i in range(len(pit))])
+    cands = []
+    for i in range(3, len(ps) - 4):
+        if ps[i - 3:i].all() and not ps[i:i + 4].any() and not bar[max(0, i - 3):i + 6].any():
+            cands.append(float(t[i]))
+    cands = [c for c in cands if c <= t0 + wa and c > min_t]       # one cut belongs to ONE ball (the next ball is >= ~8 s later)
+    if not cands:
+        return None
+    return min(cands, key=lambda c: abs(c - t0))
+
+
+def refine_shots(src, events, log=None):
+    """move every six / four / wicket event onto its real shot time. -> (moved, not_found)"""
+    moved = nf = 0
+    prev = -1e9
+    for e in sorted(events, key=lambda x: x["t_hit"]):
+        if e["kind"] not in ("six", "four", "wicket"):
+            continue
+        try:
+            st = shot_time(src, e["t_hit"], min_t=prev + 8.0)
+            if st is None:                                          # the estimate sat on the replay: the live ball is further back
+                st = shot_time(src, e["t_hit"], wb=20.0, wa=2.0, min_t=prev + 8.0)
+            if st is None:                                          # still nothing: the live ball is before a long replay
+                st = shot_time(src, e["t_hit"], wb=26.0, wa=-1.0, min_t=prev + 8.0, need_replay=True)
+        except Exception as ex:                                     # noqa
+            st = None
+            if log:
+                log("shot_time failed %.0f: %s" % (e["t_hit"], ex))
+        if st is None:
+            nf += 1
+            continue
+        e["t_banner_est"] = e["t_hit"]
+        e["exact"] = True
+        e["t"] = e["t_end"] = e["t_hit"] = st
+        prev = st
+        moved += 1
+    events.sort(key=lambda x: x["t"])
+    return moved, nf
+
+
+def refine_toss_start(src, ts):
+    """the toss banner appears while the picture is still the previous match (players walking off): the toss scene starts at the
+    last hard cut within 4-16 s after the banner. -> new start (or ts)"""
+    import subprocess, re
+    cmd = ["ffmpeg", "-loglevel", "info", "-ss", "%.2f" % ts, "-t", "20", "-i", src, "-an", "-sn",
+           "-vf", "scale=160:90,select='gt(scene,0.12)',showinfo", "-f", "null", "-"]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    cuts = [ts + float(x) for x in re.findall(r"pts_time:([0-9.]+)", r.stderr)]
+    cuts = [c for c in cuts if ts + 4.0 <= c <= ts + 16.0]
+    return max(ts, cuts[-1] - 0.3) if cuts else ts
+
+
 def build_plan(H, wav, dur, db, target_min, hop=0.5, src=None):
     """called from hl_runner.process(): transcribe the whole window, build the plan. db = energy track (dB per hop)."""
     def energy(t):
@@ -591,6 +680,17 @@ def build_plan(H, wav, dur, db, target_min, hop=0.5, src=None):
             H.log("scoreboard analysis failed:", e)
             sb = None
         if sb and sum(1 for e in sb["events"] if e["kind"] != "dot") >= 4:
+            try:
+                H.hl_review.set_live("transcribe", "Har shot ka sahi time video se pakad raha hai", force=True)
+                mv, nf = refine_shots(src, sb["events"], log=H.log)
+                H.log("exact shot time: %d events moved onto the real shot, %d kept on banner estimate" % (mv, nf))
+                if sb.get("toss_start") is not None:
+                    t2 = refine_toss_start(src, float(sb["toss_start"]))
+                    if t2 != sb["toss_start"]:
+                        H.log("toss scene starts at %.1fs (banner was %.1fs, previous match footage before that)" % (t2, sb["toss_start"]))
+                        sb["toss_start"] = t2
+            except Exception as e:                                  # noqa -- banner estimates still make a plan
+                H.log("exact shot time failed:", e)
             plan = plan_from_segments([], dur, target_min * 60.0 * 1.5, energy, sb=sb)
 
             def _spans(pl):
