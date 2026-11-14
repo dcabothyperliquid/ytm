@@ -95,6 +95,12 @@ def live_title(src, channel=""):
     if not (teams or p["tour"]):
         return "%s %s Match | %s" % (head, p["sport"], BRAND)
     first = (head + " " + p["tour"].upper()).strip() if p["tour"] else head
+    pr = facts_for(src).get("prize")
+    pz = ("\U0001F4B0 Prize %s" % pr) if pr else ""
+    for parts in ([first, teams, pz, BRAND], [first, teams, pz], [first, teams, BRAND]):   # prize beats brand when space is tight
+        t = " | ".join(x for x in parts if x)
+        if len(t) <= 100:
+            return t
     return _fit([first, teams, BRAND])
 
 
@@ -120,6 +126,9 @@ def live_desc(src, channel=""):
     head = " - ".join(x for x in (p["tour"], p["stage"]) if x) or "Live %s" % p["sport"]
     tag = "".join(re.sub(r"[^0-9A-Za-z]", "", w).capitalize() for w in (p["tour"] or "").split()[:3])
     L = ["\U0001F534 LIVE NOW: " + head]
+    pr = facts_for(src).get("prize")
+    if pr:
+        L.append("\U0001F4B0 Winner prize: %s" % pr)
     if p["a"] and p["b"]:
         L.append("\U0001F3CF %s vs %s" % (p["a"], p["b"]))
     L += ["", "Watch the full %s match live on %s." % (p["sport"].lower(), BRAND),
@@ -136,7 +145,9 @@ def _mtxt(p, short=False):
 
 def highlight_title(src, seed="", channel=""):
     p = parse_match(src, channel)
-    t = _HL[_seed(seed or src) % len(_HL)].format(m=_mtxt(p))
+    pr = facts_for(src).get("prize")
+    pool = _HL + (["\U0001F4B0 %s Ka Inaam Kisne Jeeta? {m} | Full Highlights" % pr] * 2 if pr else [])
+    t = pool[_seed(seed or src) % len(pool)].format(m=_mtxt(p))
     return t if len(t) <= 100 else _HL[0].format(m=_mtxt(p))[:100].rsplit(" ", 1)[0]
 
 
@@ -146,6 +157,48 @@ def short_title(event, src, seed="", channel=""):
     t = opts[_seed(seed or src) % len(opts)].format(m=_mtxt(p))
     t = t[:88].rsplit(" ", 1)[0] if len(t) > 88 else t
     return t + " #Shorts"
+
+
+# ─────────────────────────── real facts only ───────────────────────────
+_AMT = r"(?:₹|rs\.?|inr)\s*([\d][\d,]*(?:\.\d+)?)\s*(k|lakh|lac|lakhs|hazar|हज़ार|हजार|लाख)?|([\d][\d,]*)\s*(?:/-|rs\b|rupees|रुपये|रुपए)"
+_PRIZE_KW = re.compile(r"(prize|inaam|inam|winner|winning|first|trophy|इनाम|विजेता|पुरस्कार)", re.I)
+SRC_DESC = {}      # source title -> source description (filled by the runner from videos.list, 0 extra quota)
+
+
+def _amount(m):
+    num = (m.group(1) or m.group(3) or "").replace(",", "")
+    try:
+        v = float(num)
+    except ValueError:
+        return 0
+    mult = (m.group(2) or "").lower()
+    if mult in ("k", "hazar", "हज़ार", "हजार"):
+        v *= 1000
+    elif mult in ("lakh", "lac", "lakhs", "लाख"):
+        v *= 100000
+    return int(v)
+
+
+def extract_facts(*texts):
+    """Only what the source text really says. Today: winner prize money. Returns {} when nothing reliable is found -
+    callers then simply show nothing (no guessing, no invented numbers)."""
+    best = 0
+    for line in re.split(r"[\n|]+", " \n ".join(t for t in texts if t)):
+        if not _PRIZE_KW.search(line):
+            continue
+        for m in re.finditer(_AMT, line, re.I):
+            v = _amount(m)
+            if 1000 <= v <= 50000000:                       # ignore entry-fee sized / absurd numbers
+                best = max(best, v)
+    if not best:
+        return {}
+    n = str(best)                                           # Indian grouping: 1,50,000
+    s = n if len(n) <= 3 else re.sub(r"(\d+?)(?=(\d\d)+(\d)$)", r"\1,", n)
+    return {"prize": "\u20b9" + s}
+
+
+def facts_for(src):
+    return extract_facts(src, SRC_DESC.get(src, ""))
 
 
 # ─────────────────────────── thumbnail banner ───────────────────────────
@@ -202,6 +255,31 @@ def _shadow_text(img, xy, text, font, fill, anchor="la", stroke=0, stroke_fill=(
     lay = lay.filter(ImageFilter.GaussianBlur(3))
     img.alpha_composite(lay)
     ImageDraw.Draw(img).text(xy, text, font=font, fill=fill, anchor=anchor, stroke_width=stroke, stroke_fill=stroke_fill)
+
+
+def _slug(name):
+    return re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
+
+
+def team_photo(name):
+    """teams/<slug>.(jpg|jpeg|png|webp) - captain / team photo you added once. None = no photo (banner stays clean)."""
+    d = os.environ.get("YTM_TEAMS_DIR", os.path.join(HERE, "teams"))
+    for ext in ("jpg", "jpeg", "png", "webp"):
+        f = os.path.join(d, "%s.%s" % (_slug(name), ext))
+        if os.path.isfile(f):
+            return f
+    return None
+
+
+def add_team(name, src_img):
+    from PIL import Image, ImageOps
+    d = os.environ.get("YTM_TEAMS_DIR", os.path.join(HERE, "teams"))
+    os.makedirs(d, exist_ok=True)
+    im = ImageOps.exif_transpose(Image.open(src_img)).convert("RGB")
+    im.thumbnail((900, 900))
+    out = os.path.join(d, _slug(name) + ".jpg")
+    im.save(out, quality=88)
+    return out
 
 
 def _team_colors(name):
@@ -275,6 +353,26 @@ def make_banner(frame, src, out, channel="", logo=None):
             nf = _fit_font(d, name.upper(), (x1 - x0) - 210, 66, 28)
             _shadow_text(img, ((x0 + x1) // 2 + (-34 if side == 0 else 34), (ty0 + ty1) // 2 - 6), name.upper(), nf, (255, 255, 255), anchor="mm", stroke=3, shadow=3)
             d = ImageDraw.Draw(img)
+        # team photos: round portrait sitting on the ribbon's outer end
+        for side, name, (ca, cb) in ((0, p["a"], (c1a, c1b)), (1, p["b"], (c2a, c2b))):
+            tp = team_photo(name)
+            if not tp:
+                continue
+            try:
+                ph = Image.open(tp).convert("RGB")
+                m = min(ph.size)
+                ph = ph.crop(((ph.width - m) // 2, int((ph.height - m) * 0.25), (ph.width - m) // 2 + m, int((ph.height - m) * 0.25) + m)).resize((216, 216), Image.LANCZOS)
+                mk = Image.new("L", (216, 216), 0)
+                ImageDraw.Draw(mk).ellipse([0, 0, 215, 215], fill=255)
+                ring = Image.new("RGBA", (240, 240), (0, 0, 0, 0))
+                ImageDraw.Draw(ring).ellipse([0, 0, 239, 239], fill=(255, 255, 255, 255))
+                ImageDraw.Draw(ring).ellipse([7, 7, 232, 232], fill=ca + (255,))
+                px = 70 if side == 0 else W - 70 - 240
+                img.alpha_composite(ring, (px, 218))
+                img.paste(ph, (px + 12, 230), mk)
+            except Exception:
+                pass
+        d = ImageDraw.Draw(img)
         # VS badge
         cx, cy, r = W // 2, (ty0 + ty1) // 2, 70
         d.ellipse([cx - r - 8, cy - r - 8, cx + r + 8, cy + r + 8], fill=(255, 255, 255, 255))
@@ -286,6 +384,14 @@ def make_banner(frame, src, out, channel="", logo=None):
         _shadow_text(img, (W // 2, (ty0 + ty1) // 2), "LIVE MATCH", mf, (255, 255, 255), anchor="mm", stroke=4)
         d = ImageDraw.Draw(img)
 
+    pr = facts_for(src).get("prize")
+    if pr:
+        pf = _font(46)
+        txt = "WINNER PRIZE  %s" % pr
+        tw = d.textlength(txt, font=pf)
+        bx0, bx1, by0, by1 = W // 2 - tw / 2 - 56, W // 2 + tw / 2 + 56, 372, 444
+        _slant_box(d, bx0, by0, bx1, by1, (255, 214, 10, 255), 24)
+        d.text((W // 2, (by0 + by1) // 2 + 2), txt, font=pf, fill=(120, 20, 20), anchor="mm")
     # bottom strip: LIVE ON + brand + logo
     sy0 = 600
     d.rectangle([0, sy0, W, H], fill=(8, 12, 30, 245))
@@ -325,3 +431,11 @@ def make_banner(frame, src, out, channel="", logo=None):
             break
         q -= 10
     return out
+
+
+if __name__ == "__main__":      # python ytm_style.py --add-team "KIRTI 11" photo.jpg
+    import sys
+    if len(sys.argv) == 4 and sys.argv[1] == "--add-team":
+        print(add_team(sys.argv[2], sys.argv[3]))
+    else:
+        print(__doc__)
