@@ -389,6 +389,54 @@ def _youtube_upload(path, title, desc, privacy, tags):
     return json.loads(r.stdout)["id"]
 
 
+# ---------------------------------------------------------------- Facebook Page (LML) upload
+def _fb_creds():
+    return (os.environ.get("LML_FB_PAGE_ID", "").strip(), os.environ.get("LML_FB_PAGE_TOKEN", "").strip())
+
+
+def _fb_call(args, tok):
+    r = sh(["curl", "-sS", "--max-time", "1500"] + args, check=False)
+    try:
+        j = json.loads(r.stdout or "{}")
+    except Exception:                                   # noqa
+        raise RuntimeError("FB bad response: %s" % ((r.stdout or r.stderr or "")[-300:]).replace(tok, "***"))
+    if isinstance(j, dict) and j.get("error"):
+        raise RuntimeError("FB error: %s" % json.dumps(j["error"])[:300].replace(tok, "***"))
+    return j
+
+
+def _fb_upload(path, kind, title, desc):
+    """kind = 'short' -> Facebook Reel (vertical, <=90s); 'highlight' -> normal Page video.
+    Returns the FB video id. Raises on failure (caller keeps YouTube result untouched)."""
+    page, tok = _fb_creds()
+    if not (page and tok):
+        return None
+    G = "https://graph.facebook.com/v21.0"
+    size = os.path.getsize(path)
+    if kind == "short":
+        j = _fb_call(["-X", "POST", "%s/%s/video_reels" % (G, page), "-d", "upload_phase=start",
+                      "-d", "access_token=" + tok], tok)
+        vid, up = j.get("video_id"), j.get("upload_url")
+        if not (vid and up):
+            raise RuntimeError("FB reel start failed: %s" % json.dumps(j)[:200])
+        j = _fb_call(["-X", "POST", up, "-H", "Authorization: OAuth " + tok, "-H", "offset: 0",
+                      "-H", "file_size: %d" % size, "--data-binary", "@" + path], tok)
+        if not j.get("success"):
+            raise RuntimeError("FB reel upload failed: %s" % json.dumps(j)[:200])
+        j = _fb_call(["-X", "POST", "%s/%s/video_reels" % (G, page), "-d", "upload_phase=finish",
+                      "-d", "video_id=" + vid, "-d", "video_state=PUBLISHED",
+                      "--data-urlencode", "description=" + desc[:2000], "-d", "access_token=" + tok], tok)
+        if not j.get("success"):
+            raise RuntimeError("FB reel publish failed: %s" % json.dumps(j)[:200])
+        return vid
+    j = _fb_call(["-X", "POST", "https://graph-video.facebook.com/v21.0/%s/videos" % page,
+                  "-F", "source=@" + path, "-F", "title=" + title[:200], "-F", "description=" + desc[:5000],
+                  "-F", "access_token=" + tok], tok)
+    if not j.get("id"):
+        raise RuntimeError("FB video upload failed: %s" % json.dumps(j)[:200])
+    return j["id"]
+
+
 def upload_approved():
     """Upload every approved item once. Result is written into hl_state (matches[].shorts[].uploaded / highlight.uploaded)."""
     cfg = load_cfg()
@@ -421,8 +469,18 @@ def upload_approved():
                 tags = ["shorts", "highlights", "live"]
             yid = _youtube_upload(path, title, desc, privacy, tags)
             log("uploaded", sid, "->", yid)
+            fb_id, fb_err = None, None
+            try:                                        # Facebook is best-effort: never breaks the YouTube result
+                fb_title = title.replace(" #Shorts", "")
+                fb_desc = desc.replace("#Shorts", "").strip() + "\n\n#cricket #highlights #LML"
+                fb_id = _fb_upload(path, "highlight" if sid == "highlight" else "short", fb_title, fb_desc)
+                if fb_id:
+                    log("facebook uploaded", sid, "->", fb_id)
+            except Exception as fe:                     # noqa
+                fb_err = str(fe)[:300]
+                log("facebook upload failed", sid, fb_err)
 
-            def mut(st2, vid=m["vid"], sid=sid, yid=yid):
+            def mut(st2, vid=m["vid"], sid=sid, yid=yid, fb_id=fb_id, fb_err=fb_err):
                 for mm in st2["matches"]:
                     if mm["vid"] != vid:
                         continue
@@ -430,6 +488,11 @@ def upload_approved():
                     if tgt is not None:
                         tgt["uploaded"] = {"yid": yid, "at": int(time.time()), "privacy": privacy}
                         tgt.pop("upload_error", None)
+                        if fb_id:
+                            tgt["fb_uploaded"] = {"id": fb_id, "at": int(time.time())}
+                            tgt.pop("fb_error", None)
+                        elif fb_err:
+                            tgt["fb_error"] = fb_err
             save_state(mut, "hl uploaded %s" % sid)
             done += 1
         except Exception as e:                      # noqa
