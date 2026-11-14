@@ -850,7 +850,7 @@ def run_vid(vid, target_min=None, window=None):
     res = process(src, out, {"title": info, "vid": vid}, offset=offset)
     # ---- full quality -> DRAFT release (visible only to repo writers = you)
     hl_review.set_live("release", "Full-quality files GitHub release pe upload ho rahe hain", force=True)
-    tag = "hl-" + vid
+    tag = "hl-" + vid + hl_review.key_sfx()
     for r in gh_releases():
         if r["tag_name"] == tag:
             sh(["gh", "api", "-X", "DELETE", "repos/%s/releases/%s" % (repo(), r["id"])], check=False)

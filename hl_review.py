@@ -145,8 +145,14 @@ def upload_asset(rel_id, path, name=None):
         "https://uploads.github.com/repos/%s/releases/%s/assets?name=%s" % (repo(), rel_id, name)])
 
 
-def preview_url(vid, name):
-    return "https://github.com/%s/releases/download/hlp-%s/%s" % (repo(), vid, name)
+def key_sfx(match=None):
+    """one VOD can hold several matches (Deoria = 10, Kaushambi = 11): their releases / state entries must not overwrite each other."""
+    m = (os.environ.get("HL_MATCH", "") if match is None else str(match or "")).strip()
+    return ("-m" + re.sub(r"\W", "", m)) if m else ""
+
+
+def preview_url(vid, name, match=None):
+    return "https://github.com/%s/releases/download/hlp-%s%s/%s" % (repo(), vid, key_sfx(match), name)
 
 
 def make_preview(src, out, height=480, crf=32):
@@ -177,7 +183,7 @@ def publish_match(vid, title, outdir, res, tag_full="hl-", window=None):
         p = os.path.join(prev, s["preview_name"])
         make_preview(os.path.join(outdir, s["file"]), p, height=480, crf=33)
         files.append(p)
-    tag = "hlp-" + vid
+    tag = "hlp-" + vid + key_sfx()
     sh(["gh", "release", "delete", tag, "-R", repo(), "--cleanup-tag", "-y"], check=False)
     sh(["gh", "release", "create", tag, "-R", repo(), "--prerelease", "--target", "main",
         "--title", "Preview %s" % vid, "--notes", "low-res previews for the dashboard"] + files)
@@ -185,7 +191,8 @@ def publish_match(vid, title, outdir, res, tag_full="hl-", window=None):
     entry = {"vid": vid, "title": title, "processed": now, "day": time.strftime("%Y-%m-%d", time.gmtime(now + IST)),
              "dur_min": round(res["dur"] / 60.0, 1), "score": match_score(res["ranked"]),
              "finish": res.get("finish", 0.0), "window": list(window) if window else None,
-             "release_id": release_id(tag_full + vid), "prev_release_id": release_id(tag),
+             "release_id": release_id(tag_full + vid + key_sfx()), "prev_release_id": release_id(tag),
+             "match": os.environ.get("HL_MATCH", "").strip() or None,
              "highlight": {"file": res["highlight"]["file"], "dur": res["highlight"]["dur"],
                            "chapters": res["highlight"]["chapters"],
                            "preview": preview_url(vid, "highlights_p.mp4")},
@@ -193,7 +200,7 @@ def publish_match(vid, title, outdir, res, tag_full="hl-", window=None):
                         | {"preview": preview_url(vid, s["preview_name"])} for s in res["shorts"]]}
 
     def mut(st):
-        st["matches"] = [entry] + [m for m in st["matches"] if m["vid"] != vid]
+        st["matches"] = [entry] + [m for m in st["matches"] if not (m["vid"] == vid and (m.get("match") or None) == entry["match"])]
         st["matches"] = st["matches"][:MAX_MATCHES]
     save_state(mut, "hl match %s" % vid)
     log("state updated for", vid)
@@ -267,7 +274,7 @@ def do_edit(H, c):
                 for ss in mm["shorts"]:
                     if ss["id"] == s["id"]:
                         ss.update(id=nid, file=nid + ".mp4", preview_name=nid + "_p.mp4", start=round(start, 1),
-                                  end=round(end, 1), title=title, preview=preview_url(c["vid"], nid + "_p.mp4"), edited=True)
+                                  end=round(end, 1), title=title, preview=preview_url(c["vid"], nid + "_p.mp4", c.get("match") or ""), edited=True)
     save_state(mut, "hl edit %s" % nid)
     for f in (sec, out, pout):
         if os.path.exists(f):
