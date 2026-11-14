@@ -744,11 +744,30 @@ def logo_probe(hls):
         return None
 
 
+def fb_rtmp():
+    """Facebook Page output (opt-in). Returns rtmps URL or None.
+    On only when secret FB_STREAM_KEY is set; relay 1 only (relay 2 is a separate YouTube stream); FB_ENABLE=off kills it."""
+    key = os.environ.get("FB_STREAM_KEY", "").strip()
+    if not key or SLOT == "2" or os.environ.get("FB_ENABLE", "on").strip().lower() == "off":
+        return None
+    base = os.environ.get("FB_RTMP_BASE", "rtmps://live-api-s.facebook.com:443/rtmp").rstrip("/")
+    return base + "/" + key
+
+
+def _tee(rtmp, fb):
+    """One encode -> YouTube + Facebook. YouTube failure ends ffmpeg (recovery logic restarts it);
+    a Facebook failure is ignored so it can never take the YouTube relay down."""
+    return "[f=flv]%s|[f=flv:onfail=ignore]%s" % (rtmp, fb)
+
+
 def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
+    fb = fb_rtmp()
     base = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-stats", "-reconnect", "1", "-reconnect_streamed", "1",
             "-reconnect_delay_max", "5", "-fflags", "+genpts", "-i", hls]
     logo = os.environ.get("YTM_LOGO", "logo.png")
     if not os.path.isfile(logo):
+        if fb:
+            return base + ["-map", "0:v?", "-map", "0:a?", "-c", "copy", "-tag:a", "10", "-f", "tee", _tee(rtmp, fb)]
         return base + ["-c", "copy", "-f", "flv", rtmp]          # no logo file -> old behaviour (stream copy)
     # logo mode: re-encode. Frame is forced to 1280x720, source-channel logo corners are smeared (delogo),
     # then YOUR logo goes top-right on top. YTM_DELOGO="x:y:w:h;x:y:w:h" overrides the boxes, YTM_DELOGO=off disables.
@@ -787,8 +806,9 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
         lw, pos = str(int(logo_spec["w"])), "%d:%d" % (int(logo_spec["x"]), int(logo_spec["y"]))
     fc = chain + "[bg];[1:v]scale=%s:-1[lg];[bg][lg]overlay=%s,split=2[v][s];[s]fps=1/20,scale=640:-1[snap]" % (lw, pos)
     return (base + ["-i", logo] + (["-i", tagimg] if use_img else []) + ["-filter_complex", fc, "-map", "[v]", "-map", "0:a?",
-            "-c:v", "libx264", "-preset", os.environ.get("YTM_PRESET", "veryfast"), "-profile:v", "high", "-crf", "20", "-maxrate", "6000k", "-bufsize", "12000k",
-            "-g", "60", "-pix_fmt", "yuv420p", "-c:a", "copy", "-f", "flv", rtmp,
+            "-c:v", "libx264", "-preset", os.environ.get("YTM_PRESET", "veryfast"), "-profile:v", "high", "-crf", "20",
+            "-maxrate", "4000k" if fb else "6000k", "-bufsize", "8000k" if fb else "12000k",      # Facebook wants <= ~4 Mbps at 720p
+            "-g", "60", "-pix_fmt", "yuv420p", "-c:a", "copy"] + (["-tag:a", "10", "-f", "tee", _tee(rtmp, fb)] if fb else ["-f", "flv", rtmp]) + [
             "-map", "[snap]", "-q:v", "5", "-f", "image2", "-update", "1", "-y", "/tmp/ytm_frame.jpg"])
 
 
@@ -815,6 +835,7 @@ class Relay:
             else:
                 spec = logo_probe(hls)
                 self.st["logo_probe"] = {"video_id": vid, "spec": spec, "ver": LOGO_PROBE_VER, "at": int(time.time())}
+        self.st["fb_on"] = bool(fb_rtmp())
         return self._popen(ffmpeg_cmd(hls, self.rtmp, strip, spec), stderr=self._elog)
 
     def _tail(self):
@@ -825,6 +846,7 @@ class Relay:
                 f.seek(max(0, f.tell() - 600))
                 t = f.read().decode("utf8", "replace").replace("\r", "\n")
             self.st["ffmpeg_tail"] = re.sub(r"rtmps?://\S+", "rtmp://***", t)[-350:]
+            self.st["fb_dropped"] = bool(self.st.get("fb_on") and re.search(r"Slave .*(fail|ignor)", t, re.I))
         except Exception:
             pass
         now = time.time()

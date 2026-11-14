@@ -83,6 +83,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           YT_STREAM_KEY: ${{ secrets.YT_STREAM_KEY }}
+          FB_STREAM_KEY: ${{ secrets.FB_STREAM_KEY }}      # optional: Facebook Page (LML Sports) gets the same stream. Unset = YouTube only.
+          FB_ENABLE: ${{ vars.FB_ENABLE || 'on' }}          # set repo variable FB_ENABLE=off to pause Facebook without touching the secret
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
