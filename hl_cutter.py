@@ -7,7 +7,7 @@ Highlights CUT PLAN (see HIGHLIGHTS_SPEC.md section 2) built from the commentary
              in the death overs (last ~18% of each innings) dots that decide the chase are kept.
   4. SIXES   clear commentary of the whole six; a replay window is added only for the top few sixes (not all).
   5. END     last over complete + winning run + celebration (the confirmed window already ends ~45 s after the last ball).
-  6. LENGTH  over budget -> drop in this order: filler dots, lowest-energy fours, death dots, six replays. Never the must-keep set.
+  6. LENGTH  over budget -> drop in this order: filler dots, death dots, six replays, plain wides. Never wickets / sixes / fours / no-balls.
              NO hard cap: highlight = whole match shown well in less time, not a minute-count. Wickets / sixes / no-balls stay.
   7. SNAP    every clip start/end moves to the commentator's sentence boundary (snap_plan), so no sentence is cut in the middle.
 
@@ -260,12 +260,8 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
                 break
             clips.remove(c)
             dropped["filler_dot"] += 1
-    if length(clips) > target_s:
-        for c in sorted([c for c in clips if c["event"] == "four"], key=lambda c: c["db"]):
-            if length(clips) <= target_s:
-                break
-            clips.remove(c)
-            dropped["four"] += 1
+    # FOURS ARE NEVER DROPPED (decided 2026-11-14: every four / six / wicket is shown; a reel that is too long is fine).
+    # Only filler dots, death dots, replays and plain wides are trimmed to the budget.
     if length(clips) > target_s:
         for c in sorted([c for c in clips if c.get("death")], key=lambda c: c["db"]):
             if length(clips) <= target_s:

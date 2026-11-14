@@ -100,7 +100,8 @@ def stable_states(rows, need=2):
 def _ok_step(a, g):
     """is scoreboard state g a believable next state after a (same innings)?"""
     dr, dw, db = g["runs"] - a["runs"], g["wk"] - a["wk"], g["balls"] - a["balls"]
-    return 0 <= dr <= 7 * max(1, db + 1) and 0 <= dw <= 1 and 0 <= db <= 2
+    # one ball = at most 6 (+1 for a no-ball): 87 -> 99 in ONE ball is an OCR misread (89 read as 99), not a state
+    return 0 <= dr <= 7 * max(1, db) + 1 and 0 <= dw <= 1 and 0 <= db <= 2
 
 
 def consistent_states(rows, need=2):
@@ -147,8 +148,8 @@ def events_from_states(states, lag=4.0):
     prev = None
     for s in states:
         if prev is not None:
-            # new innings = score/overs fell back
-            if s["balls"] + 2 < prev["balls"] or s["runs"] + 2 < prev["runs"]:
+            # new innings = overs AND score (or wickets) really fell back. A single misread digit (99 for 89) is not an innings.
+            if s["balls"] + 6 < prev["balls"] and (s["runs"] + 6 < prev["runs"] or s["wk"] < prev["wk"]):
                 inn += 1
                 innings.append([])
                 prev = None
@@ -209,7 +210,7 @@ def banner_onsets(frames):
     return out
 
 
-def align_events(events, onsets, default_lag=8.0, back=2.0):
+def align_events(events, onsets, default_lag=8.0, back=2.0, state_ts=None):
     """Put every event at the moment the ball was hit, not when the operator typed the score.
     The scoreboard updates several seconds AFTER the shot; the SIX / FOUR / WICKET graphic comes right after it.
     For events that have a matching graphic: t = graphic onset - `back`. The median (score - ball) delay of those is applied to
@@ -240,6 +241,10 @@ def align_events(events, onsets, default_lag=8.0, back=2.0):
     added = 0
     for tb, k in onsets:
         if any(e["kind"] == k and abs(e["t_hit"] - (tb - back)) <= 30.0 for e in events):
+            continue
+        # a graphic with the score frozen all around it (crowd on the pitch, operator testing) is not a ball: the scoreboard
+        # must change within 45 s before / 90 s after it (the operator types the score up to ~2-3 balls late)
+        if state_ts is not None and not any(tb - 45.0 <= st <= tb + 90.0 for st in state_ts):
             continue
         events.append({"kind": k, "t": max(0.0, tb - back), "t_end": max(0.0, tb - back), "t_hit": max(0.0, tb - back),
                        "t_state": tb + lag, "inn": (min(events, key=lambda e: abs(e["t_hit"] - tb))["inn"] if events else 0),
@@ -393,7 +398,7 @@ def analyze_window(H, src, dur):
     kinds = {}
     for e in events:
         kinds[e["kind"]] = kinds.get(e["kind"], 0) + 1
-    lag, n_al, n_add = align_events(events, banner_onsets(sorted(banners)))
+    lag, n_al, n_add = align_events(events, banner_onsets(sorted(banners)), state_ts=[st["t"] for st in states])
     H.log("scoreboard: score->ball delay %.1fs (%d events matched to their SIX/FOUR/WICKET graphic, %d more found only by the graphic)" % (lag, n_al, n_add))
     kinds = {}
     for e in events:
