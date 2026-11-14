@@ -47,5 +47,14 @@ try:
                           "start": b["snippet"].get("actualStartTime"), "end": b["snippet"].get("actualEndTime")} for b in lb]
 except Exception as e:
     out["broadcasts_error"] = err_text(e)
+try:
+    ac = get("liveBroadcasts", {"part": "id,snippet,status,contentDetails", "broadcastStatus": "active", "maxResults": 10}).get("items", [])
+    out["active"] = [{"title": b["snippet"]["title"][:50], "life": b["status"]["lifeCycleStatus"], "rec": b["status"].get("recordingStatus"),
+                      "stream_slot": names.get(b["contentDetails"].get("boundStreamId"), "?"), "created": b["snippet"].get("publishedAt")} for b in ac]
+    up = get("liveBroadcasts", {"part": "id,snippet,status,contentDetails", "broadcastStatus": "upcoming", "maxResults": 10}).get("items", [])
+    out["upcoming"] = [{"title": b["snippet"]["title"][:50], "life": b["status"]["lifeCycleStatus"],
+                        "stream_slot": names.get(b["contentDetails"].get("boundStreamId"), "?"), "created": b["snippet"].get("publishedAt")} for b in up]
+except Exception as e:
+    out["active_error"] = err_text(e)
 print(json.dumps(out, ensure_ascii=False, indent=1))
 json.dump(out, open("diag_out.json", "w"), ensure_ascii=False, indent=1)
