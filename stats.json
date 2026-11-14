@@ -1,0 +1,93 @@
+{
+ "generated": 1794662995,
+ "generated_utc": "2026-11-14 13:29",
+ "oauth": true,
+ "channel": {
+  "id": "UCvHaGlkg3HEXaIRMack-fbQ",
+  "title": "Local Match Live",
+  "subscribers": 20,
+  "views": 2865,
+  "videos": 47
+ },
+ "last_28d": {
+  "error": 403,
+  "note": "{\n  \"error\": {\n    \"code\": 403,\n    \"message\": \"YouTube Analytics API has not been used in project 366084356704 before or it is disabled. Enable it by visiting https://console.developers.google.com/ap"
+ },
+ "last_365d": {
+  "error": 403,
+  "note": "{\n  \"error\": {\n    \"code\": 403,\n    \"message\": \"YouTube Analytics API has not been used in project 366084356704 before or it is disabled. Enable it by visiting https://console.developers.google.com/ap"
+ },
+ "bot": {
+  "status": "relaying",
+  "units_today": 2739,
+  "relay": "KPC TROPHY 2026 || INAMPURI || DAY 2",
+  "outcomes_last30": {
+   "stopped": 8,
+   "failed": 4,
+   "interrupted": 10,
+   "ended": 9
+  },
+  "recent": [
+   {
+    "title": "FINAL DAY | NGPL || NORTH GOA PREMIER LEAGUE 2026",
+    "outcome": "interrupted",
+    "note": "job chained",
+    "min": 49
+   },
+   {
+    "title": "SSCS TROPHY 2026 || ORGNISERS: SHREE SADGURU KRUPA SUPPLIERS",
+    "outcome": "ended",
+    "note": "source ended",
+    "min": 21
+   },
+   {
+    "title": "Day 8 | Umerkote Premier League 2026",
+    "outcome": "ended",
+    "note": "source ended",
+    "min": 196
+   },
+   {
+    "title": "Day 8 | Umerkote Premier League 2026",
+    "outcome": "interrupted",
+    "note": "job ended, next run resumes",
+    "min": 62
+   },
+   {
+    "title": "🔴 LIVE | | RPL-11 || DAY-05 { Raj Club Premier League-Rajsam",
+    "outcome": "stopped",
+    "note": "manual stop",
+    "min": 267
+   },
+   {
+    "title": "KPC TROPHY 2026 INAMPURI | DAY 1",
+    "outcome": "failed",
+    "note": "ffmpeg/probe failed",
+    "min": 4
+   },
+   {
+    "title": "🔴 LIVE | | RPL-11 || DAY-05 { Raj Club Premier League-Rajsam",
+    "outcome": "failed",
+    "note": "ffmpeg/probe failed",
+    "min": 9
+   },
+   {
+    "title": "KPC TROPHY 2026 INAMPURI | DAY 1",
+    "outcome": "failed",
+    "note": "ffmpeg/probe failed",
+    "min": 7
+   },
+   {
+    "title": "DAY=3 ||  K.C.C CHASHAK 2026 || KARKAMB",
+    "outcome": "stopped",
+    "note": "daily cap",
+    "min": 106
+   },
+   {
+    "title": "DAY=3 ||  K.C.C CHASHAK 2026 || KARKAMB",
+    "outcome": "interrupted",
+    "note": "job chained",
+    "min": 185
+   }
+  ]
+ }
+}
