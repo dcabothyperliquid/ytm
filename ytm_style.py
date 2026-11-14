@@ -257,31 +257,6 @@ def _shadow_text(img, xy, text, font, fill, anchor="la", stroke=0, stroke_fill=(
     ImageDraw.Draw(img).text(xy, text, font=font, fill=fill, anchor=anchor, stroke_width=stroke, stroke_fill=stroke_fill)
 
 
-def _slug(name):
-    return re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
-
-
-def team_photo(name):
-    """teams/<slug>.(jpg|jpeg|png|webp) - captain / team photo you added once. None = no photo (banner stays clean)."""
-    d = os.environ.get("YTM_TEAMS_DIR", os.path.join(HERE, "teams"))
-    for ext in ("jpg", "jpeg", "png", "webp"):
-        f = os.path.join(d, "%s.%s" % (_slug(name), ext))
-        if os.path.isfile(f):
-            return f
-    return None
-
-
-def add_team(name, src_img):
-    from PIL import Image, ImageOps
-    d = os.environ.get("YTM_TEAMS_DIR", os.path.join(HERE, "teams"))
-    os.makedirs(d, exist_ok=True)
-    im = ImageOps.exif_transpose(Image.open(src_img)).convert("RGB")
-    im.thumbnail((900, 900))
-    out = os.path.join(d, _slug(name) + ".jpg")
-    im.save(out, quality=88)
-    return out
-
-
 def _team_colors(name):
     return _PALETTE[_seed(name.lower()) % len(_PALETTE)]
 
@@ -353,25 +328,6 @@ def make_banner(frame, src, out, channel="", logo=None):
             nf = _fit_font(d, name.upper(), (x1 - x0) - 210, 66, 28)
             _shadow_text(img, ((x0 + x1) // 2 + (-34 if side == 0 else 34), (ty0 + ty1) // 2 - 6), name.upper(), nf, (255, 255, 255), anchor="mm", stroke=3, shadow=3)
             d = ImageDraw.Draw(img)
-        # team photos: round portrait sitting on the ribbon's outer end
-        for side, name, (ca, cb) in ((0, p["a"], (c1a, c1b)), (1, p["b"], (c2a, c2b))):
-            tp = team_photo(name)
-            if not tp:
-                continue
-            try:
-                ph = Image.open(tp).convert("RGB")
-                m = min(ph.size)
-                ph = ph.crop(((ph.width - m) // 2, int((ph.height - m) * 0.25), (ph.width - m) // 2 + m, int((ph.height - m) * 0.25) + m)).resize((216, 216), Image.LANCZOS)
-                mk = Image.new("L", (216, 216), 0)
-                ImageDraw.Draw(mk).ellipse([0, 0, 215, 215], fill=255)
-                ring = Image.new("RGBA", (240, 240), (0, 0, 0, 0))
-                ImageDraw.Draw(ring).ellipse([0, 0, 239, 239], fill=(255, 255, 255, 255))
-                ImageDraw.Draw(ring).ellipse([7, 7, 232, 232], fill=ca + (255,))
-                px = 70 if side == 0 else W - 70 - 240
-                img.alpha_composite(ring, (px, 218))
-                img.paste(ph, (px + 12, 230), mk)
-            except Exception:
-                pass
         d = ImageDraw.Draw(img)
         # VS badge
         cx, cy, r = W // 2, (ty0 + ty1) // 2, 70
@@ -432,10 +388,3 @@ def make_banner(frame, src, out, channel="", logo=None):
         q -= 10
     return out
 
-
-if __name__ == "__main__":      # python ytm_style.py --add-team "KIRTI 11" photo.jpg
-    import sys
-    if len(sys.argv) == 4 and sys.argv[1] == "--add-team":
-        print(add_team(sys.argv[2], sys.argv[3]))
-    else:
-        print(__doc__)
