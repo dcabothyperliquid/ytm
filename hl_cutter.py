@@ -54,6 +54,7 @@ PAD = {"wicket": (6, 11), "six": (6, 9), "four": (5, 6), "noball": (4, 5), "wide
 PAD_SB = {"wicket": (8, 8), "six": (8, 6), "four": (7, 5), "noball": (6, 4), "wide": (5, 3), "dot": (6, 2)}
 SIX_REPLAY = 10             # extra seconds after a TOP six (replay usually follows within ~10-25 s)
 TOP_SIXES = 3
+HARD_CAP = 1.25             # final highlight never longer than 1.25 x the target (10 min -> 12.5 min)
 MUST = ("wicket", "six", "noball", "wide")
 DEATH_FRAC = 0.18           # last 18% of an innings = death overs
 FILL_GAP = 100              # s without any clip in the early overs -> add one dot ball as filler
@@ -276,6 +277,25 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
                 break
             clips.remove(c)
             dropped["wide"] += 1
+
+    # ---- hard cap: a high-scoring match has far more must-keep sixes / no-balls than the budget allows.
+    # Keep toss, finish and every wicket; drop the weakest no-balls, then the weakest sixes (death-over sixes and the
+    # replayed TOP sixes are the last to go), until the highlight fits HARD_CAP * target.
+    hard_s = target_s * HARD_CAP
+    dropped.update({"noball": 0, "six": 0})
+    if length(clips) > hard_s:
+        for c in sorted([c for c in clips if c["event"] == "noball"], key=lambda c: c["db"]):
+            if length(clips) <= hard_s:
+                break
+            clips.remove(c)
+            dropped["noball"] += 1
+    if length(clips) > hard_s:
+        for c in sorted([c for c in clips if c["event"] == "six"],
+                        key=lambda c: (bool(c.get("replay")), in_death(c["t"]), c["db"])):
+            if length(clips) <= hard_s:
+                break
+            clips.remove(c)
+            dropped["six"] += 1
 
     # ---- merge overlaps (keep the strongest label), chronological
     clips.sort(key=lambda c: c["start"])
