@@ -320,6 +320,8 @@ def apply_commands(H):
                 H.run_vid(c["vid"], float(c.get("target_min") or H.TARGET_MIN), window=(m or {}).get("window"))
             elif c["type"] == "confirm":
                 do_confirm(H, c)
+            elif c["type"] == "fb_backfill":
+                do_fb_backfill(c)
             elif c["type"] == "skip":
                 _scout_status(c["vid"], "skipped")
             elif c["type"] == "rescout":
@@ -390,8 +392,18 @@ def _youtube_upload(path, title, desc, privacy, tags):
 
 
 # ---------------------------------------------------------------- Facebook Page (LML) upload
+G_API = "https://graph.facebook.com/v21.0"
+
+
 def _fb_creds():
     return (os.environ.get("LML_FB_PAGE_ID", "").strip(), os.environ.get("LML_FB_PAGE_TOKEN", "").strip())
+
+
+def _fb_enabled(cfg=None):
+    """Dashboard master switch (cfg.fb_post, default ON) + credentials present."""
+    cfg = cfg if cfg is not None else load_cfg()
+    page, tok = _fb_creds()
+    return bool(page and tok and cfg.get("fb_post", True))
 
 
 def _fb_call(args, tok):
@@ -406,15 +418,13 @@ def _fb_call(args, tok):
 
 
 def _fb_upload(path, kind, title, desc):
-    """kind = 'short' -> Facebook Reel (vertical, <=90s); 'highlight' -> normal Page video.
-    Returns the FB video id. Raises on failure (caller keeps YouTube result untouched)."""
+    """kind = 'short' -> Facebook Reel (vertical, <=90s); 'highlight' -> normal Page video. Returns the FB video id."""
     page, tok = _fb_creds()
     if not (page and tok):
         return None
-    G = "https://graph.facebook.com/v21.0"
     size = os.path.getsize(path)
     if kind == "short":
-        j = _fb_call(["-X", "POST", "%s/%s/video_reels" % (G, page), "-d", "upload_phase=start",
+        j = _fb_call(["-X", "POST", "%s/%s/video_reels" % (G_API, page), "-d", "upload_phase=start",
                       "-d", "access_token=" + tok], tok)
         vid, up = j.get("video_id"), j.get("upload_url")
         if not (vid and up):
@@ -423,7 +433,7 @@ def _fb_upload(path, kind, title, desc):
                       "-H", "file_size: %d" % size, "--data-binary", "@" + path], tok)
         if not j.get("success"):
             raise RuntimeError("FB reel upload failed: %s" % json.dumps(j)[:200])
-        j = _fb_call(["-X", "POST", "%s/%s/video_reels" % (G, page), "-d", "upload_phase=finish",
+        j = _fb_call(["-X", "POST", "%s/%s/video_reels" % (G_API, page), "-d", "upload_phase=finish",
                       "-d", "video_id=" + vid, "-d", "video_state=PUBLISHED",
                       "--data-urlencode", "description=" + desc[:2000], "-d", "access_token=" + tok], tok)
         if not j.get("success"):
@@ -439,23 +449,97 @@ def _fb_upload(path, kind, title, desc):
     return j["id"]
 
 
+def _fb_status(fb_id):
+    """-> ('ready'|'processing'|'error', detail). Facebook accepts a file first and processes/publishes it later."""
+    _, tok = _fb_creds()
+    try:
+        j = _fb_call(["-G", "%s/%s" % (G_API, fb_id), "--data-urlencode", "fields=status", "-d", "access_token=" + tok], tok)
+    except Exception as e:                              # noqa
+        return "processing", str(e)[:120]
+    stt = j.get("status") or {}
+    vs = (stt.get("video_status") or "").lower()
+    ph = ((stt.get("publishing_phase") or {}).get("status") or "").lower()
+    if vs == "error" or ph == "error":
+        det = json.dumps(stt.get("processing_phase") or stt.get("uploading_phase") or stt)[:160]
+        return "error", det
+    if vs == "ready" and ph in ("", "complete", "published"):
+        return "ready", ""
+    return "processing", vs or ph
+
+
+def _fb_wait(fb_id, tries=6, delay=10):
+    stt, det = "processing", ""
+    for i in range(tries):
+        stt, det = _fb_status(fb_id)
+        if stt != "processing":
+            break
+        time.sleep(delay)
+    return stt, det
+
+
+def _fb_link(fb_id, kind):
+    return ("https://www.facebook.com/reel/%s" if kind == "short" else "https://www.facebook.com/watch/?v=%s") % fb_id
+
+
+def _fb_target(cfg, vid, sid):
+    t = (cfg.get("targets") or {}).get("%s/%s" % (vid, sid), "both")
+    return t if t in ("both", "yt", "fb") else "both"
+
+
+def _fb_post_item(path, kind, title, desc):
+    """Upload to Facebook and wait for processing. Returns (record|None, error|None)."""
+    try:
+        fid = _fb_upload(path, kind, title, desc)
+        if not fid:
+            return None, None
+        stt, det = _fb_wait(fid)
+        if stt == "error":
+            return None, "FB processing failed: %s" % det
+        return {"id": fid, "at": int(time.time()), "kind": kind, "link": _fb_link(fid, kind), "status": stt, "checks": 1}, None
+    except Exception as e:                              # noqa
+        return None, str(e)[:300]
+
+
+def _item(st2, vid, sid):
+    for mm in st2["matches"]:
+        if mm["vid"] == vid:
+            return mm["highlight"] if sid == "highlight" else next((x for x in mm.get("shorts", []) if x["id"] == sid), None)
+    return None
+
+
+def _fb_texts(m, sid, it):
+    if sid == "highlight":
+        t = "%s | Highlights" % m["title"]
+    else:
+        t = it["title"].replace("#Shorts", "").replace("#shorts", "").strip()
+    d = "%s\n\nFull match: https://www.youtube.com/watch?v=%s\n\n#cricket #highlights #LML" % (t, m["vid"])
+    return t[:100], d
+
+
 def upload_approved():
-    """Upload every approved item once. Result is written into hl_state (matches[].shorts[].uploaded / highlight.uploaded)."""
+    """Upload every approved item once. YouTube and/or Facebook per item target (cfg.targets: both|yt|fb)."""
     cfg = load_cfg()
     privacy = cfg.get("privacy") or "public"
     rv = cfg.get("reviews") or {}
+    fb_on = _fb_enabled(cfg)
     st, _ = load_state()
     todo = []
     for m in st["matches"]:
         items = [("highlight", m["highlight"])] + [(s["id"], s) for s in m.get("shorts", [])]
         for sid, it in items:
-            if rv.get("%s/%s" % (m["vid"], sid), {}).get("status") == "approved" and not it.get("uploaded"):
-                todo.append((m, sid, it))
+            if rv.get("%s/%s" % (m["vid"], sid), {}).get("status") != "approved" or it.get("uploaded"):
+                continue
+            tg = _fb_target(cfg, m["vid"], sid)
+            if tg == "fb" and not fb_on:
+                log("skip", sid, "(target FB only but Facebook is OFF/not connected)")
+                continue
+            todo.append((m, sid, it, tg))
     log("approved & not uploaded yet:", len(todo))
     os.makedirs("/tmp/hlup", exist_ok=True)
     done = 0
-    for _i, (m, sid, it) in enumerate(todo, 1):
-        set_live("uploading", "YouTube upload: %s" % sid, vid=m["vid"], title=m.get("title", ""), cur=_i, total=len(todo), force=True)
+    for _i, (m, sid, it, tg) in enumerate(todo, 1):
+        set_live("uploading", "Upload: %s (%s)" % (sid, {"both": "YouTube+FB", "yt": "YouTube", "fb": "Facebook"}[tg]),
+                 vid=m["vid"], title=m.get("title", ""), cur=_i, total=len(todo), force=True)
         path = os.path.join("/tmp/hlup", it["file"])
         try:
             _download_asset(m["release_id"], it["file"], path)
@@ -469,99 +553,137 @@ def upload_approved():
                 title = it["title"] if "#shorts" in it["title"].lower() else (it["title"][:92] + " #Shorts")
                 desc = "%s\n\nFull match: https://www.youtube.com/watch?v=%s\n#Shorts" % (it["title"], m["vid"])
                 tags = ["shorts", "highlights", "live"]
-            yid = _youtube_upload(path, title, desc, privacy, tags)
-            log("uploaded", sid, "->", yid)
-            fb_id, fb_err = None, None
-            try:                                        # Facebook is best-effort: never breaks the YouTube result
-                fb_title = title.replace(" #Shorts", "")
-                fb_desc = desc.replace("#Shorts", "").strip() + "\n\n#cricket #highlights #LML"
-                fb_id = _fb_upload(path, "highlight" if sid == "highlight" else "short", fb_title, fb_desc)
-                if fb_id:
-                    log("facebook uploaded", sid, "->", fb_id)
-            except Exception as fe:                     # noqa
-                fb_err = str(fe)[:300]
-                log("facebook upload failed", sid, fb_err)
+            yid = ""
+            if tg != "fb":
+                yid = _youtube_upload(path, title, desc, privacy, tags)
+                log("uploaded", sid, "->", yid)
+            fb_rec, fb_err = None, None
+            if tg != "yt" and fb_on:                    # Facebook is best-effort: never breaks the YouTube result
+                ft, fd = _fb_texts(m, sid, it)
+                fb_rec, fb_err = _fb_post_item(path, "highlight" if sid == "highlight" else "short", ft, fd)
+                log("facebook", sid, "->", (fb_rec or {}).get("id"), (fb_rec or {}).get("status"), fb_err or "")
 
-            def mut(st2, vid=m["vid"], sid=sid, yid=yid, fb_id=fb_id, fb_err=fb_err):
-                for mm in st2["matches"]:
-                    if mm["vid"] != vid:
-                        continue
-                    tgt = mm["highlight"] if sid == "highlight" else next((x for x in mm["shorts"] if x["id"] == sid), None)
-                    if tgt is not None:
-                        tgt["uploaded"] = {"yid": yid, "at": int(time.time()), "privacy": privacy}
-                        tgt.pop("upload_error", None)
-                        if fb_id:
-                            tgt["fb_uploaded"] = {"id": fb_id, "at": int(time.time())}
-                            tgt.pop("fb_error", None)
-                        elif fb_err:
-                            tgt["fb_error"] = fb_err
+            def mut(st2, vid=m["vid"], sid=sid, yid=yid, fb_rec=fb_rec, fb_err=fb_err, tg=tg):
+                tgt = _item(st2, vid, sid)
+                if tgt is None:
+                    return
+                tgt["uploaded"] = {"yid": yid, "at": int(time.time()), "privacy": privacy if yid else "fb-only"}
+                tgt.pop("upload_error", None)
+                if fb_rec:
+                    tgt["fb_uploaded"] = fb_rec
+                    tgt.pop("fb_error", None)
+                elif fb_err:
+                    tgt["fb_error"] = fb_err
             save_state(mut, "hl uploaded %s" % sid)
             done += 1
         except Exception as e:                      # noqa
             log("upload failed", sid, e)
 
             def mut(st2, vid=m["vid"], sid=sid, err=str(e)[:300]):
-                for mm in st2["matches"]:
-                    if mm["vid"] != vid:
-                        continue
-                    tgt = mm["highlight"] if sid == "highlight" else next((x for x in mm["shorts"] if x["id"] == sid), None)
-                    if tgt is not None:
-                        tgt["upload_error"] = err
+                tgt = _item(st2, vid, sid)
+                if tgt is not None:
+                    tgt["upload_error"] = err
             save_state(mut, "hl upload error %s" % sid)
         finally:
             if os.path.exists(path):
                 os.remove(path)
-    try:
-        fb_retry()
-    except Exception as e:                              # noqa
-        log("fb_retry error", e)
+    for fn in (fb_recheck, fb_retry):
+        try:
+            fn()
+        except Exception as e:                      # noqa
+            log(fn.__name__, "error", e)
     return done
 
 
-def fb_retry():
-    """Items already on YouTube whose Facebook upload failed earlier (fb_error): try again, max 3 times."""
-    page, tok = _fb_creds()
-    if not (page and tok):
+def fb_recheck():
+    """Facebook finishes processing later: re-poll items still 'processing' (young ones only, max 12 polls)."""
+    if not _fb_enabled():
         return 0
+    st, _ = load_state()
+    now = time.time()
+    todo = [(m["vid"], sid, it["fb_uploaded"]) for m in st["matches"]
+            for sid, it in [("highlight", m["highlight"])] + [(x["id"], x) for x in m.get("shorts", [])]
+            if (it.get("fb_uploaded") or {}).get("status") == "processing"
+            and now - it["fb_uploaded"].get("at", 0) < 12 * 3600 and int(it["fb_uploaded"].get("checks") or 1) < 12]
+    res = []
+    for vid, sid, rec in todo:
+        stt, det = _fb_status(rec["id"])
+        res.append((vid, sid, stt, det))
+    if res:
+        def mut(st2):
+            for vid, sid, stt, det in res:
+                tgt = _item(st2, vid, sid)
+                if tgt is None or not tgt.get("fb_uploaded"):
+                    continue
+                rec = tgt["fb_uploaded"]
+                rec["checks"] = int(rec.get("checks") or 1) + 1
+                if stt == "ready":
+                    rec["status"] = "ready"
+                elif stt == "error":                    # failed after acceptance -> goes into the retry path
+                    tgt.pop("fb_uploaded", None)
+                    tgt["fb_error"] = "FB processing failed: %s" % det
+        save_state(mut, "hl fb recheck")
+    return len(res)
+
+
+def fb_retry():
+    """Items on YouTube (or fb-only) whose Facebook post failed (fb_error): try again, max 3 times."""
+    if not _fb_enabled():
+        return 0
+    cfg = load_cfg()
     st, _ = load_state()
     todo = []
     for m in st["matches"]:
         for sid, it in [("highlight", m["highlight"])] + [(x["id"], x) for x in m.get("shorts", [])]:
-            if it.get("uploaded") and it.get("fb_error") and not it.get("fb_uploaded") and int(it.get("fb_tries") or 1) < 3:
+            if it.get("uploaded") and it.get("fb_error") and not it.get("fb_uploaded") and int(it.get("fb_tries") or 1) < 3 \
+                    and _fb_target(cfg, m["vid"], sid) != "yt":
                 todo.append((m, sid, it))
     done = 0
     os.makedirs("/tmp/hlup", exist_ok=True)
     for m, sid, it in todo:
         path = os.path.join("/tmp/hlup", it["file"])
-        fb_id, fb_err = None, None
+        rec, err = None, None
         try:
             _download_asset(m["release_id"], it["file"], path)
-            t = (m["title"] + " | Highlights") if sid == "highlight" else it["title"].replace("#Shorts", "").strip()
-            d = t + "\n\nFull match: https://www.youtube.com/watch?v=%s\n\n#cricket #highlights #LML" % m["vid"]
-            fb_id = _fb_upload(path, "highlight" if sid == "highlight" else "short", t[:100], d)
+            ft, fd = _fb_texts(m, sid, it)
+            rec, err = _fb_post_item(path, "highlight" if sid == "highlight" else "short", ft, fd)
         except Exception as e:                          # noqa
-            fb_err = str(e)[:300]
-            log("facebook retry failed", sid, fb_err)
+            err = str(e)[:300]
         finally:
             if os.path.exists(path):
                 os.remove(path)
+        log("facebook retry", sid, (rec or {}).get("id"), err or "")
 
-        def mut(st2, vid=m["vid"], sid=sid, fb_id=fb_id, fb_err=fb_err):
-            for mm in st2["matches"]:
-                if mm["vid"] != vid:
-                    continue
-                tgt = mm["highlight"] if sid == "highlight" else next((x for x in mm["shorts"] if x["id"] == sid), None)
-                if tgt is None:
-                    continue
-                if fb_id:
-                    tgt["fb_uploaded"] = {"id": fb_id, "at": int(time.time())}
-                    tgt.pop("fb_error", None)
-                else:
-                    tgt["fb_error"] = fb_err
-                    tgt["fb_tries"] = int(tgt.get("fb_tries") or 1) + 1
+        def mut(st2, vid=m["vid"], sid=sid, rec=rec, err=err):
+            tgt = _item(st2, vid, sid)
+            if tgt is None:
+                return
+            if rec:
+                tgt["fb_uploaded"] = rec
+                tgt.pop("fb_error", None)
+            else:
+                tgt["fb_error"] = err or "unknown"
+                tgt["fb_tries"] = int(tgt.get("fb_tries") or 1) + 1
         save_state(mut, "hl fb retry %s" % sid)
-        done += 1 if fb_id else 0
+        done += 1 if rec else 0
     return done
+
+
+def do_fb_backfill(c):
+    """Dashboard 'purane shorts bhi FB pe bhejo': mark YouTube-uploaded items without a Facebook post for the retry path."""
+    cfg = load_cfg()
+    want = (c.get("vid") or "").strip()
+
+    def mut(st):
+        for m in st["matches"]:
+            if want and m["vid"] != want:
+                continue
+            for sid, it in [("highlight", m["highlight"])] + [(x["id"], x) for x in m.get("shorts", [])]:
+                if it.get("uploaded") and (it["uploaded"] or {}).get("yid") and not it.get("fb_uploaded") \
+                        and not it.get("fb_error") and _fb_target(cfg, m["vid"], sid) != "yt":
+                    it["fb_error"] = "backfill"
+                    it["fb_tries"] = 1
+    save_state(mut, "hl fb backfill")
 
 
 def pending_uploads():
@@ -569,8 +691,12 @@ def pending_uploads():
     rv = cfg.get("reviews") or {}
     st, _ = load_state()
     n = 0
+    now = time.time()
     for m in st["matches"]:
         for sid, it in [("highlight", m["highlight"])] + [(s["id"], s) for s in m.get("shorts", [])]:
             if rv.get("%s/%s" % (m["vid"], sid), {}).get("status") == "approved" and not it.get("uploaded") and not it.get("upload_error"):
+                n += 1
+            fu = it.get("fb_uploaded") or {}
+            if fu.get("status") == "processing" and now - fu.get("at", 0) < 12 * 3600 and int(fu.get("checks") or 1) < 12:
                 n += 1
     return n
