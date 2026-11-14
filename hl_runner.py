@@ -819,6 +819,60 @@ def release_disk():
     log("disk released (%d items), free %.1f GB" % (n, free_gb()))
 
 
+# ---------------------------------------------------------------- trimmed-match cache (draft release hlsrc-*)
+# Every run is a fresh runner (no disk survives), so the trimmed confirmed match is kept in a DRAFT release while the edit is not final:
+# edit / re-make / rerun download it from there instead of the 8 h VOD. Deleted SRC_KEEP_H hours after it was made.
+SRC_KEEP_H = 48
+
+
+def _src_tag(vid, window):
+    return "hlsrc-%s-%d-%d" % (vid, int(window[0]), int(window[1]))
+
+
+def src_cache_get(vid, window, dest):
+    """-> real start offset of the cached trimmed match (file written to dest), or None (no cache / any failure)."""
+    try:
+        tag = _src_tag(vid, window)
+        r = sh(["gh", "api", "repos/%s/releases" % repo(), "--paginate", "-q",
+                '.[] | select(.tag_name=="%s") | {id,body}' % tag], check=False)
+        for line in (r.stdout or "").splitlines():
+            d = json.loads(line)
+            off = float(json.loads(d["body"])["offset"])
+            hl_review._download_asset(d["id"], "src.mp4", dest)
+            return off
+    except Exception as e:                                      # noqa -- no cache is fine, the normal download runs
+        log("src cache miss:", e)
+        if os.path.exists(dest):
+            os.remove(dest)
+    return None
+
+
+def src_cache_put(vid, window, src, offset):
+    try:
+        tag = _src_tag(vid, window)
+        for r in sh(["gh", "api", "repos/%s/releases" % repo(), "--paginate", "-q",
+                     '.[] | select(.tag_name=="%s") | .id' % tag], check=False).stdout.split():
+            sh(["gh", "api", "-X", "DELETE", "repos/%s/releases/%s" % (repo(), r)], check=False)
+        sh(["gh", "release", "create", tag, "-R", repo(), "--draft", "--target", "main", "--title", "src %s" % tag,
+            "--notes", json.dumps({"offset": offset}), src])
+        note("trimmed match cached in draft release %s (edits will not re-download the VOD)" % tag)
+    except Exception as e:                                      # noqa
+        log("src cache put failed:", e)
+
+
+def src_cache_cleanup():
+    try:
+        cutoff = time.time() - SRC_KEEP_H * 3600
+        r = sh(["gh", "api", "repos/%s/releases" % repo(), "--paginate", "-q",
+                '.[] | select(.tag_name|startswith("hlsrc-")) | {id,created_at}'], check=False)
+        for line in (r.stdout or "").splitlines():
+            d = json.loads(line)
+            if time.mktime(time.strptime(d["created_at"], "%Y-%m-%dT%H:%M:%SZ")) < cutoff:
+                sh(["gh", "api", "-X", "DELETE", "repos/%s/releases/%s" % (repo(), d["id"])], check=False)
+    except Exception as e:                                      # noqa
+        log("src cache cleanup failed:", e)
+
+
 # ---------------------------------------------------------------- run (CI)
 def run_vid(vid, target_min=None, window=None):
     """window = (start_s, end_s) confirmed on the dashboard: only that part of the VOD is downloaded + processed."""
@@ -838,9 +892,14 @@ def run_vid(vid, target_min=None, window=None):
                        vid=vid, title=clean_title(info) or info, force=True)
     offset = 0.0
     if window:
-        full = ensure_full(vid)
-        offset = trim(full, float(window[0]) - 5.0, float(window[1]) + 5.0, src)
-        note("trimmed %.0f-%.0f s -> %.0f MB (real start %.2f)" % (window[0], window[1], os.path.getsize(src) / 1e6, offset))
+        offset = src_cache_get(vid, window, src)
+        if offset is not None:
+            note("trimmed match reused from cache release: no VOD download (real start %.2f)" % offset)
+        else:
+            full = ensure_full(vid)
+            offset = trim(full, float(window[0]) - 5.0, float(window[1]) + 5.0, src)
+            note("trimmed %.0f-%.0f s -> %.0f MB (real start %.2f)" % (window[0], window[1], os.path.getsize(src) / 1e6, offset))
+            src_cache_put(vid, window, src, offset)
     else:                                                    # no confirmed window (old rerun): whole VOD as before
         fmt_sel = "bv*[height<=%d]+ba/b[height<=%d]/b" % (MAX_H, MAX_H)
         t0 = time.time()
@@ -870,6 +929,7 @@ def run_vid(vid, target_min=None, window=None):
             for aid in r["assets"]:
                 sh(["gh", "api", "-X", "DELETE", "repos/%s/releases/assets/%s" % (repo(), aid)], check=False)
     hl_review.cleanup_old()
+    src_cache_cleanup()
     sh(["rm", "-rf", out], check=False)
 
 
@@ -885,6 +945,7 @@ def _cmd_run():
         hl_review.apply_commands(sys.modules[__name__])
         n = hl_review.upload_approved()
         note("uploads done: %d" % n)
+        src_cache_cleanup()
         hl_review.set_live("done", "Commands apply + %d upload complete" % n, force=True)
         return
     vid = os.environ.get("VID", "").strip()
