@@ -1,0 +1,132 @@
+{
+ "ts": 1794663158,
+ "oauth": "ok",
+ "streams": [
+  {
+   "id": "43872906",
+   "title": "YTM Relay 2",
+   "slot_key": "none",
+   "status": "inactive",
+   "health": "noData"
+  },
+  {
+   "id": "23904427",
+   "title": "Default stream key",
+   "slot_key": "1",
+   "status": "active",
+   "health": "bad"
+  }
+ ],
+ "broadcasts": [
+  {
+   "id": "2q1DWFoYuAU",
+   "title": "Ind vs Pak U19 Final ODI Match Fan Chat || Ind vs ",
+   "life": "complete",
+   "stream_slot": "none",
+   "autoStop": false,
+   "start": "2026-11-14T10:34:14Z",
+   "end": "2026-11-14T11:04:59Z"
+  },
+  {
+   "id": "wTPOiHcP4Ng",
+   "title": "Day 8 || Umerkote Premier League 2026 Live",
+   "life": "complete",
+   "stream_slot": "1",
+   "autoStop": false,
+   "start": "2026-11-14T07:39:32Z",
+   "end": "2026-11-14T13:26:14Z"
+  },
+  {
+   "id": "9NVXMQaf5yc",
+   "title": "KPC Trophy 2026 Inampuri || DAY 1 Live",
+   "life": "complete",
+   "stream_slot": "1",
+   "autoStop": false,
+   "start": "2026-11-14T02:51:52Z",
+   "end": "2026-11-14T07:38:46Z"
+  },
+  {
+   "id": "IwwZaZPtIqk",
+   "title": "Day 8 || Umerkote Premier League 2026 Live",
+   "life": "complete",
+   "stream_slot": "none",
+   "autoStop": false,
+   "start": "2026-11-13T14:14:44Z",
+   "end": "2026-11-14T07:38:21Z"
+  },
+  {
+   "id": "TLq_3WXzI5E",
+   "title": "DAY 3 || K.C.C Chashak 2026 Live",
+   "life": "complete",
+   "stream_slot": "1",
+   "autoStop": false,
+   "start": "2026-11-13T12:47:28Z",
+   "end": "2026-11-13T19:19:37Z"
+  },
+  {
+   "id": "LKqNc6SBZEE",
+   "title": "Day 7 || Umerkote Premier League 2026 Live",
+   "life": "complete",
+   "stream_slot": "1",
+   "autoStop": false,
+   "start": "2026-11-13T09:41:27Z",
+   "end": "2026-11-13T12:18:00Z"
+  },
+  {
+   "id": "qC4APgDLA6s",
+   "title": "Day 7 || Umerkote Premier League 2026 Live",
+   "life": "complete",
+   "stream_slot": "1",
+   "autoStop": false,
+   "start": "2026-11-13T06:36:24Z",
+   "end": "2026-11-13T09:41:08Z"
+  },
+  {
+   "id": "pIokUwaX4E8",
+   "title": "Live Final DAY",
+   "life": "complete",
+   "stream_slot": "none",
+   "autoStop": false,
+   "start": "2026-11-13T05:36:57Z",
+   "end": "2026-11-13T12:01:47Z"
+  },
+  {
+   "id": "Ryj1d2QyXtM",
+   "title": "Live RPL - 11 || DAY-04 Raj Club Premier League-Ra",
+   "life": "complete",
+   "stream_slot": "1",
+   "autoStop": false,
+   "start": "2026-11-13T02:45:39Z",
+   "end": "2026-11-13T06:35:40Z"
+  },
+  {
+   "id": "7N04ELx94BQ",
+   "title": "Live || Day-04 Live",
+   "life": "complete",
+   "stream_slot": "none",
+   "autoStop": false,
+   "start": "2026-11-12T12:28:53Z",
+   "end": "2026-11-12T20:18:34Z"
+  },
+  {
+   "id": "L2RKN7yGSdM",
+   "title": "DAY 2 || K.C.C Chashak 2026 Live",
+   "life": "complete",
+   "stream_slot": "1",
+   "autoStop": false,
+   "start": "2026-11-12T12:08:21Z",
+   "end": "2026-11-12T20:16:14Z"
+  },
+  {
+   "id": "JiU7f2CqHVc",
+   "title": "Day 6 || Umerkote Premier League 2026 Live",
+   "life": "complete",
+   "stream_slot": "1",
+   "autoStop": false,
+   "start": "2026-11-12T11:39:50Z",
+   "end": "2026-11-12T12:08:09Z"
+  }
+ ],
+ "active": [],
+ "upcoming": []
+}
