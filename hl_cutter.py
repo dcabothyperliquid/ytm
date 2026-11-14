@@ -53,25 +53,28 @@ PLAY_RX = re.compile(r"\b(?:four|six|run|runs|over|ball|wicket|single)\b|चौ�
 PAD = {"wicket": (6, 11), "six": (6, 9), "four": (5, 6), "noball": (4, 5), "wide": (3, 4), "dot": (3, 4)}
 # scoreboard mode: events sit at the moment the ball was HIT (see hl_scoreboard.align_events), so the clip is
 # "bowler runs in -> shot -> commentary of that ball" and then it cuts to the next four / six / wicket:
-PAD_SB = {"wicket": (5, 6), "six": (4, 5), "four": (4, 4), "noball": (3, 3), "wide": (3, 2), "dot": (3, 2)}   # t = the SHOT (banner - 9..13 s): six 9 s = run-up, shot, flight; four 8 s; wicket 11 s
+PAD_SB = {"wicket": (4, 5), "six": (3, 3), "four": (2, 3), "noball": (2, 3), "wide": (2, 2), "dot": (3, 2)}   # t = the SHOT (banner - 9..13 s): six 9 s = run-up, shot, flight; four 8 s; wicket 11 s
 SIX_REPLAY = 10             # extra seconds after a TOP six (replay usually follows within ~10-25 s)
-TOP_SIXES = 3
+TOP_SIXES = 1
 MUST = ("wicket", "six", "noball", "wide")
 DEATH_FRAC = 0.18           # last 18% of an innings = death overs
 FILL_GAP = 100              # s without any clip in the early overs -> add one dot ball as filler
 TOSS_MAX = 90.0
-TOSS_SB_MAX = 40.0            # scoreboard mode: toss banner + decision, measured from the banner onset
+TOSS_SB_MAX = 20.0            # scoreboard mode: toss banner + decision, measured from the banner onset
 END_MAX = 360.0
 SNAP_BACK_MAX = 4.0          # a clip may start up to this much earlier so the commentator's sentence is heard from its first word
 SNAP_FWD_MAX = 10.0         # ... and end up to this much later so his sentence is finished (after a four / six / wicket)
 SNAP_TAIL = 0.7              # s of breathing room after the last word of the sentence
 SNAP_PAD = 14.0              # transcribe this much around every planned clip (scoreboard mode has no whole-match transcript)
-SB_END_MAX = float(os.environ.get("HL_END_MAX", "120"))   # scoreboard mode: the last over (+ win + ~45 s celebration), up to this long (was 240: 3:47 block alone; 120 = last over tail + win + celebration)
+SB_END_MAX = float(os.environ.get("HL_END_MAX", "40"))   # scoreboard mode: the last over (+ win + ~45 s celebration), up to this long (was 240: 3:47 block alone; 120 = last over tail + win + celebration)
 # LENGTH BUDGET (decided 2026-11-14 by Naem: 6-8 min highlight, "jyada lamba sahi nahi hota"):
 #   wickets / no-balls / toss / finish are NEVER dropped; 3+ consecutive boundaries (hat-trick of six / four) are never dropped;
 #   everything else is trimmed until the ESTIMATED final length (after replay cut + sentence snap) is <= HL_MAX_S.
-MAX_S = float(os.environ.get("HL_MAX_S", "430"))           # estimated final seconds -> real result lands in 6-8 min
-HARD_S = float(os.environ.get("HL_HARD_S", "460"))         # est. seconds above which streaks are thinned below a hat-trick (6-8 min promise)
+MAX_S = float(os.environ.get("HL_MAX_S", "400"))           # estimated final seconds -> real result lands in 6-8 min
+HARD_S = float(os.environ.get("HL_HARD_S", "420"))         # est. seconds above which streaks are thinned below a hat-trick (6-8 min promise)
+MAX_CLIPS = int(os.environ.get("HL_MAX_CLIPS", "47"))        # ball clips (wickets + sixes + fours) in the highlight
+FEAT_SIX = int(os.environ.get("HL_FEAT_SIX", "5"))          # sixes that get their commentary finished (the rest: shot only)
+MIN_SIX = int(os.environ.get("HL_MIN_SIX", "30"))         # Naem: "20+ six to lena hi hoga" -> sixes are only dropped down to this many (loudest kept)
 SNAP_GROWTH = 1.3                                         # measured 2026-11-14: planned 7 s ball clips end up ~9.4 s after sentence snapping
 STREAK_KEEP = 3                                           # this many consecutive six / four balls = a streak that is always shown
 
@@ -270,6 +273,8 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
         for c in sorted([c for c in clips if pred(c)], key=order or (lambda c: c.get("db", 0.0))):
             if est(clips) <= limit:
                 return
+            if c["event"] == "six" and sum(1 for x in clips if x["event"] == "six") <= MIN_SIX:
+                continue
             clips.remove(c)
             dropped[key] += 1
 
@@ -291,38 +296,63 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
 
     # ---- length control, in this order. NEVER dropped: wickets, no-balls, toss, finish, and at least one ball of every
     # streak of consecutive six / four balls (a hat-trick of boundaries is always represented).
-    drop_where(lambda c: c.get("filler"), "filler_dot")
-    drop_where(lambda c: c.get("death"), "death_dot")
-    drop_where(lambda c: c["event"] == "wide", "wide")
-    for c in [c for c in clips if c.get("replay")]:                # shorten replayed top sixes before dropping real balls
-        if est(clips) <= MAX_S:
-            break
-        c["end"] -= SIX_REPLAY
-        c["replay"] = False
-        dropped["replay"] += 1
-    drop_where(lambda c: c["event"] == "four" and c.get("streak", 1) == 1, "four")      # single fours first (quietest first)
-    drop_where(lambda c: c["event"] == "six" and c.get("streak", 1) == 1, "six")        # then single sixes (quietest first)
+    # PLAN (Naem, 2026-11-14): toss+build-up <= 20 s, finish 30-45 s, about MAX_CLIPS ball clips of ~7 s. Wides, no-balls and dots
+    # are NOT shown. Wickets are never dropped; every six / four streak keeps at least one ball. Only wickets and the best
+    # FEAT_SIX sixes get their commentary finished (feat); the other sixes / fours are just the shot, ~7 s, no sentence snap.
+    for kind, key in (("dot", "filler_dot"),):          # wides / no-balls ARE shown (ball only, ~4-5 s); dots are not
+        n0 = len(clips)
+        clips[:] = [c for c in clips if c["event"] != kind]
+        dropped[key] += n0 - len(clips)
+
+    def nballs():
+        return sum(1 for c in clips if c["event"] in ("wicket", "six", "four", "wide", "noball"))
+
+    def nsix():
+        return sum(1 for c in clips if c["event"] == "six")
+
+    def over():
+        return nballs() > MAX_CLIPS
+
+    def drop_list(pred, key):
+        for c in sorted([c for c in clips if pred(c)], key=lambda c: (c.get("db", 0.0), c["start"])):
+            if not over():
+                return
+            if c["event"] == "six" and nsix() <= MIN_SIX:
+                continue
+            clips.remove(c)
+            dropped[key] += 1
 
     groups = {}
     for c in clips:
         if c.get("sid") is not None:
             groups.setdefault(c["sid"], []).append(c)
 
-    def thin(max_keep, limit):
-        """cut every streak longer than max_keep down to its max_keep loudest balls (longest streaks first, quietest ball first);
-        stops as soon as the estimate is <= limit. A streak never drops below max_keep >= 1."""
+    def thin(max_keep):
+        """cut every streak longer than max_keep down to its max_keep loudest balls (longest streak first, quietest ball first)"""
         for sid, cs in sorted(groups.items(), key=lambda kv: -len([c for c in kv[1] if c in clips])):
             alive = [c for c in cs if c in clips]
             for c in sorted(alive, key=lambda c: (c.get("db", 0.0), c["start"]))[:max(0, len(alive) - max_keep)]:
-                if est(clips) <= limit:
+                if not over():
                     return
+                if c["event"] == "six" and nsix() <= MIN_SIX:
+                    continue
                 clips.remove(c)
                 dropped["four" if c["event"] == "four" else "six"] += 1
 
-    thin(STREAK_KEEP, MAX_S)          # a streak of 4+ is shown as a hat-trick (3 loudest)
-    thin(2, HARD_S)                   # still over the ceiling: every streak gets its 2 loudest
-    thin(1, HARD_S)                   # last resort: 1 ball per streak (the streak is still shown)
-    # wickets / no-balls / toss / finish stay even if that is over the ceiling
+    drop_list(lambda c: c["event"] == "four" and c.get("streak", 1) == 1, "four")      # single fours first (quietest first)
+    drop_list(lambda c: c["event"] == "six" and c.get("streak", 1) == 1, "six")        # then single sixes (quietest first)
+    thin(STREAK_KEEP)                 # a streak of 4+ is shown as a hat-trick (3 loudest)
+    drop_list(lambda c: c["event"] == "four", "four")
+    thin(2)
+    thin(1)                           # last resort: 1 ball per streak (the streak is still shown)
+    # featured = commentary finished to the end: every wicket + the FEAT_SIX loudest sixes + the replayed top sixes
+    for c in clips:
+        if c["event"] in ("wicket", "toss", "finish") or c.get("replay"):
+            c["feat"] = True
+    for c in sorted([c for c in clips if c["event"] == "six"], key=lambda c: -c.get("db", 0.0))[:FEAT_SIX]:
+        c["feat"] = True
+        c["start"] -= 1.0
+        c["end"] += 1.0
 
     # ---- merge overlaps (keep the strongest label), chronological
     clips.sort(key=lambda c: c["start"])
@@ -336,8 +366,10 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
                 o["event"] = c["event"]
             o["parts"] = o.get("parts", 1) + 1
             o["replay"] = bool(o.get("replay") or c.get("replay"))
+            o["feat"] = bool(o.get("feat") or c.get("feat"))
         else:
-            out.append({"start": c["start"], "end": c["end"], "event": c["event"], "parts": 1, "replay": bool(c.get("replay"))})
+            out.append({"start": c["start"], "end": c["end"], "event": c["event"], "parts": 1, "replay": bool(c.get("replay")),
+                        "feat": bool(c.get("feat"))})
     total = sum(o["end"] - o["start"] for o in out)
     counts = {}
     for c in clips:
@@ -360,6 +392,9 @@ def snap_plan(plan, segs, dur):
     out, n_end, n_start = [], 0, 0
     for o in plan["segs"]:
         a, b = o["start"], o["end"]
+        if not o.get("feat"):                                    # plain shot-only clip: fixed ~7 s, no sentence snap
+            out.append(dict(o))
+            continue
         for s in segs:                                           # ---- end
             if s["start"] < b - 0.3 and s["end"] > b + 0.3:
                 fwd = s["end"] + SNAP_TAIL
@@ -583,7 +618,7 @@ def build_plan(H, wav, dur, db, target_min, hop=0.5, src=None):
                 prog_note = H.hl_review.set_live
                 prog_note("transcribe", "Clip edges commentary ke sentence pe set kar raha hai", force=True)
                 wins = []
-                for o in plan["segs"]:
+                for o in [x for x in plan["segs"] if x.get("feat")]:
                     a, b = o["start"] - SNAP_PAD, o["end"] + SNAP_PAD
                     if wins and a <= wins[-1][1]:
                         wins[-1] = (wins[-1][0], max(wins[-1][1], b))
