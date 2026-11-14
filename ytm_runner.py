@@ -246,7 +246,7 @@ def _clean_seg(t):
     return " ".join(t.split())
 
 
-def caption_from(src, channel=""):
+def _caption_plain(src, channel=""):
     """Source title -> (title, description) for OUR live. Sport is detected from the source title/channel, so
     cricket -> cricket, kabaddi -> kabaddi, football -> football. Source channel branding/emoji/dates are dropped.
     'Quarter Final-A vs B || Bakhra Cup Azamgarh' -> 'Quarter Final - A vs B || Bakhra Cup Azamgarh Live'."""
@@ -287,6 +287,43 @@ def caption_from(src, channel=""):
     if len(title) > 100:
         title = title[:100].rsplit(" ", 1)[0]
     return title.strip(), "\n".join(desc)
+
+
+def caption_from(src, channel=""):
+    """(title, description). Pro style title (emoji + stage + tournament + teams + brand) from ytm_style;
+    YTM_STYLE=off or any error -> the old plain title."""
+    title, desc = _caption_plain(src, channel)
+    if os.environ.get("YTM_STYLE", "on").lower() != "off":
+        try:
+            import ytm_style
+            title = ytm_style.live_title(src, channel) or title
+            desc = ytm_style.live_desc(src, channel) or desc
+        except Exception as e:
+            log("style title failed (%s) -> plain title" % str(e)[:80])
+    return title, desc
+
+
+def _set_thumb(tok, vid, src_title, channel):
+    """Banner (stream frame + stage + tournament + teams + LIVE ON strip) -> YouTube thumbnail. 50 quota units.
+    Needs a phone-verified channel; any failure is only logged (never stops the relay). Returns True when set."""
+    if os.environ.get("YTM_STYLE", "on").lower() == "off" or os.environ.get("YTM_BANNER", "on").lower() == "off":
+        return True
+    try:
+        import ytm_style
+        frame = "/tmp/ytm_frame.jpg"
+        out = "/tmp/ytm_banner%s.jpg" % SLOT
+        ytm_style.make_banner(frame if os.path.isfile(frame) else None, src_title, out, channel)
+        req = urllib.request.Request("https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=%s&uploadType=media" % vid,
+                                     data=open(out, "rb").read(), method="POST",
+                                     headers={"Authorization": "Bearer " + tok, "Content-Type": "image/jpeg"})
+        urllib.request.urlopen(req, timeout=40).read()
+        log("thumbnail set for " + vid)
+        return True
+    except urllib.error.HTTPError as e:
+        log("thumbnail failed: %s (custom thumbnails need a phone-verified channel)" % _errtxt(e)[:160])
+    except Exception as e:
+        log("thumbnail failed: %s" % str(e)[:120])
+    return False
 
 
 def _errtxt(e):
@@ -519,6 +556,13 @@ def set_caption(src_title, channel=""):
         call("PUT", "liveBroadcasts", {"part": "snippet"}, {"id": it["id"], "snippet": sn})
         capt.add(it["id"])
         log("caption set: " + title)
+    th = DIAG.setdefault("thumb_try", {})
+    if th.get(it["id"], 0) < 3 and th.get(it["id"], 0) >= 0:      # up to 3 tries; -1 = done
+        has_frame = os.path.isfile("/tmp/ytm_frame.jpg")
+        if has_frame or th.get(it["id"], 0) >= 2:                 # wait (max 2 ticks) for a real frame, then go with the plain gradient
+            th[it["id"]] = -1 if _set_thumb(tok, it["id"], src_title, channel) else th.get(it["id"], 0) + 1
+        else:
+            th[it["id"]] = th.get(it["id"], 0) + 1
     if (it.get("status") or {}).get("lifeCycleStatus") != "live":
         return "wait"                                       # titled, but not LIVE yet: keep watching (watchdog re-kicks)
     return "done"

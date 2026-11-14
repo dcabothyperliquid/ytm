@@ -507,9 +507,22 @@ def _item(st2, vid, sid):
     return None
 
 
+def _hl_title(m):
+    """FOMO-style highlight title (ytm_style); YTM_STYLE=off or any problem -> the old '<title> | Highlights'."""
+    old = "%s | Highlights" % m["title"]
+    if os.environ.get("YTM_STYLE", "on").lower() == "off":
+        return old
+    try:
+        import ytm_style
+        p = ytm_style.parse_match(m["title"])
+        return ytm_style.highlight_title(m["title"], seed=m["vid"]) if (p["a"] and p["b"]) or p["tour"] else old
+    except Exception:
+        return old
+
+
 def _fb_texts(m, sid, it):
     if sid == "highlight":
-        t = "%s | Highlights" % m["title"]
+        t = _hl_title(m)
     else:
         t = it["title"].replace("#Shorts", "").replace("#shorts", "").strip()
     d = "%s\n\nFull match: https://www.youtube.com/watch?v=%s\n\n#cricket #highlights #LML" % (t, m["vid"])
@@ -544,7 +557,7 @@ def upload_approved():
         try:
             _download_asset(m["release_id"], it["file"], path)
             if sid == "highlight":
-                title = ("%s | Highlights" % m["title"])[:100]
+                title = _hl_title(m)[:100]
                 ch = it.get("chapters") or []
                 desc = "Match highlights.\n\n" + "\n".join("%s %s" % (_fmt_ts(t), ev) for t, ev in ch) \
                     + "\n\nFull match: https://www.youtube.com/watch?v=%s" % m["vid"]
