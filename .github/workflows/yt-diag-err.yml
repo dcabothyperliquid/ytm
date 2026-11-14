@@ -1,0 +1,28 @@
+name: YT Diag Err (manual)
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: write
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run diag
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          YT_STREAM_KEY: ${{ secrets.YT_STREAM_KEY }}
+          YT_STREAM_KEY_2: ${{ secrets.YT_STREAM_KEY_2 }}
+        run: python diag_err.py
+      - name: Publish result to ytm-diag branch
+        if: always()
+        run: |
+          git config user.name "ytm-diag"; git config user.email "diag@users.noreply.github.com"
+          mkdir -p /tmp/o && cp diag_out.json /tmp/o/
+          git checkout --orphan ytm-diag && git rm -rf . -q && cp /tmp/o/diag_out.json . && git add diag_out.json
+          git commit -qm "diag result" && git push -f origin ytm-diag
