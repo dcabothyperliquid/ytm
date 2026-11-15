@@ -870,11 +870,11 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
                 chain += ",delogo=x=%s:y=%s:w=%s:h=%s" % tuple(bx.strip().split(":"))
     # centre-bottom "ACL" mark (permission-holder OK'd removal): covered by a solid branded strip with our tag (no blur smear).
     # YTM_TAG="" / "off" -> strip off and the mark is delogo-smeared instead. YTM_TAG_POS="cx:cy", YTM_TAG_BOX="w:h" (1280x720 frame).
-    tag = os.environ.get("YTM_TAG", "LML").strip() if strip else "off"
+    tag = os.environ.get("YTM_TAG", "off").strip() if strip else "off"      # bottom-centre brand tag OFF by default (YTM_TAG=LML brings the text strip back)
     font = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     cx, cy = (os.environ.get("YTM_TAG_POS", "646:588").split(":") + ["588"])[:2]
     bw, bh = (os.environ.get("YTM_TAG_BOX", "250:64").split(":") + ["64"])[:2]
-    tagimg = os.environ.get("YTM_TAG_IMG", "lml_tag.png").strip()
+    tagimg = os.environ.get("YTM_TAG_IMG", "off").strip()                # bottom-centre tag image OFF by default (YTM_TAG_IMG=lml_tag.png brings it back)
     use_img = bool(strip and tagimg and tagimg.lower() != "off" and os.path.isfile(tagimg)
                    and all(re.fullmatch(r"\d{1,4}", v) for v in (cx, cy, bw, bh)))
     if use_img:                                                   # branded tag PNG (opaque, hides the source watermark)
