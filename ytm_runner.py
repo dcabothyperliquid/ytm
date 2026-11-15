@@ -786,7 +786,7 @@ def logo_probe(hls):
             d = math.hypot(bw, bh)                        # wide / square source: circle through the box corners covers it all
         else:
             d = max(bw, bh) * 1.08 + 4                    # round-ish source: small safety margin (no tiny edge peeking)
-        w = int(min(float(os.environ.get("YTM_LOGO_MAX", "260")), max(float(os.environ.get("YTM_LOGO_MIN", "170")), d * float(os.environ.get("YTM_LOGO_SCALE", "1.6")))))   # a bit bigger than the bare cover size (YTM_LOGO_SCALE) and never below YTM_LOGO_MIN
+        w = int(min(float(os.environ.get("YTM_LOGO_MAX", "260")), max(float(os.environ.get("YTM_LOGO_MIN", "140")), d * float(os.environ.get("YTM_LOGO_SCALE", "1.3")))))   # a bit bigger than the bare cover size (YTM_LOGO_SCALE) and never below YTM_LOGO_MIN
         h = w
         bleed = int(w * 0.12)                             # a circle fully inside the frame can't cover a badge hugging the corner -> allow a small bleed past the edge
         x = int(min(1280 - w + bleed, max(-bleed, cx - w / 2.0)))
@@ -844,7 +844,7 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False):
     yt, fb = outputs()
     base = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-stats", "-reconnect", "1", "-reconnect_streamed", "1",
             "-reconnect_delay_max", "5", "-fflags", "+genpts", "-i", hls]
-    logo = os.environ.get("YTM_LOGO", "lml_circle.png" if os.path.isfile("lml_circle.png") else "logo.png")      # opaque round logo (make_lml_circle.py); falls back to the transparent wordmark
+    logo = os.environ.get("YTM_LOGO", "logo.png")      # transparent wordmark; an opaque round alternative is lml_circle.png (YTM_LOGO=lml_circle.png)
     if not os.path.isfile(logo):
         if fb and yt:
             return base + ["-map", "0:v?", "-map", "0:a?", "-c", "copy", "-tag:a", "10", "-f", "tee", _tee(rtmp, fb)]
@@ -860,7 +860,7 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False):
     # permitted source: our logo sits centred on the source's round top-right logo (centre 1186,89),
     # whose pixels are removed first with a tight circle mask (no rectangle smear). Any other source: plain logo, nothing removed.
     pos = os.environ.get("YTM_LOGO_POS", "1101:39" if permitted else "W-w-4:22")
-    lw = os.environ.get("YTM_LOGO_W", "170" if permitted else "175")
+    lw = os.environ.get("YTM_LOGO_W", "170" if permitted else "150")
     chain = "[0:v]fps=30,scale=1280:720:flags=lanczos:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1"
     if boxes.lower() != "off":
         for bx in boxes.split(";"):
@@ -957,6 +957,25 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False):
                 wm = (lh, gx, wy + 3)
     if logo_spec:                                                 # auto-sized to the detected source logo
         lw, pos = str(int(logo_spec["w"])), "%d:%d" % (int(logo_spec["x"]), int(logo_spec["y"]))
+    # navy patch right under the wordmark logo: fills the strip where a source's sub-badge/"LIVE" text pokes out below our transparent logo.
+    # YTM_LOGO_PATCH=off disables; YTM_LOGO_PATCH_COLOR = hex colour (default navy 0x101b38).
+    if os.environ.get("YTM_LOGO_PATCH", "on").strip().lower() != "off" and os.path.basename(logo) == "logo.png":
+        try:
+            lwn = int(float(lw))
+            lhn = int(lwn * 419 / 708.0)                      # wordmark aspect (logo.png is 708x419)
+            lxn, lyn = (int(logo_spec["x"]), int(logo_spec["y"])) if logo_spec else (1280 - lwn - 4, 22)
+            pw, ph = int(lwn * 0.80), max(22, int(lwn * 0.30))
+            px_, py_ = lxn + (lwn - pw) // 2, lyn + lhn - int(lwn * 0.05)
+            px_, py_ = max(0, min(1280 - pw, px_)), max(0, min(720 - ph, py_))
+            pc = os.environ.get("YTM_LOGO_PATCH_COLOR", "0x101b38").strip()
+            if re.fullmatch(r"0x[0-9a-fA-F]{6}", pc):
+                chain += ",drawbox=x=%d:y=%d:w=%d:h=%d:color=%s:t=fill" % (px_, py_, pw, ph, pc)
+                _pf = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+                if os.path.isfile(_pf):
+                    chain += (",drawtext=fontfile=%s:text='LIVE':fontcolor=0xe2182c:fontsize=%d:x=%d+(%d-text_w)/2:y=%d+(%d-text_h)/2"
+                              % (_pf, max(12, int(ph * 0.55)), px_, pw, py_, ph))
+        except Exception:
+            pass
     if wm:
         fc = chain + ("[bg];[1:v]split=2[l1][l2];[l1]scale=%s:-1[lg];[l2]scale=-1:%d[lg2];[bg][lg]overlay=%s[o1];[o1][lg2]overlay=%d:%d"
                       ",split=2[v][s];[s]fps=1/20,scale=640:-1[snap]" % (lw, wm[0], pos, wm[1], wm[2]))
