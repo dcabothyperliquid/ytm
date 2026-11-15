@@ -658,9 +658,12 @@ def probe(url):
 
 
 def _tag_geom():
-    cx, cy = (os.environ.get("YTM_TAG_POS", "646:588").split(":") + ["588"])[:2]
-    bw, bh = (os.environ.get("YTM_TAG_BOX", "250:64").split(":") + ["64"])[:2]
-    return int(cx), int(cy), int(bw), int(bh)
+    """Spot the centre-bottom probe looks at = exactly where our badge goes (YTM_WM_BOX x:y:w:h, 1280x720 frame)."""
+    try:
+        wx, wy, ww, wh = [int(v) for v in os.environ.get("YTM_WM_BOX", "471:577:330:38").split(":")]
+        return wx + ww // 2, wy + wh // 2, ww, wh
+    except Exception:
+        return 636, 596, 330, 38
 
 
 def mark_present(hls):
@@ -979,7 +982,7 @@ class Relay:
         self._elog = open("/tmp/ffmpeg.log", "wb")
         self._last_t, self._last_t_at = None, time.time()
         strip = True
-        if os.environ.get("YTM_MARK_DETECT", "off").lower() != "off":
+        if os.environ.get("YTM_MARK_DETECT", "on").lower() != "off":
             r = mark_present(hls)
             strip = True if r is None else r
             self.st["mark_probe"] = {"watermark": r, "strip": strip, "at": int(time.time())}
