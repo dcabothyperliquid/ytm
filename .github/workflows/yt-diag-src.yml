@@ -9,6 +9,10 @@ on:
         description: "Video ID"
         required: false
         default: "tkFXziDr8Pw"
+      ss:
+        description: "Start offset seconds (VOD)"
+        required: false
+        default: "1200"
 
 permissions:
   contents: write
@@ -30,20 +34,23 @@ jobs:
         env:
           YT_COOKIES: ${{ secrets.YT_COOKIES }}
           VID: ${{ github.event.inputs.video }}
+          SS: ${{ github.event.inputs.ss }}
         run: |
           mkdir -p out
           python hl_runner.py cookies || true
           CK=""; [ -f cookies.txt ] && CK="--cookies cookies.txt"
           URL=$(yt-dlp --no-warnings --js-runtimes node --remote-components ejs:github $CK -g -f "best[height<=720]/b" "https://www.youtube.com/watch?v=$VID" | head -1)
           echo "got url: ${URL:0:40}..."
-          ffmpeg -y -loglevel error -i "$URL" -vf "fps=1/20,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2" -frames:v 12 -q:v 2 out/src_%02d.png || true
+          VF="fps=1/25,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2"
+          ffmpeg -y -loglevel error -ss "${SS:-0}" -i "$URL" -vf "$VF" -frames:v 10 -q:v 2 out/src_%02d.png || true
+          ls out/*.png >/dev/null 2>&1 || ffmpeg -y -loglevel error -i "$URL" -vf "$VF" -frames:v 10 -q:v 2 out/src_%02d.png || true
           ls -la out
       - name: Publish (ONLY images, never cookies)
         run: |
           rm -f cookies.txt
           mkdir -p /tmp/o && cp out/*.png /tmp/o/ 2>/dev/null || true
           git config user.name ytm-src; git config user.email src@users.noreply.github.com
-          git checkout --orphan ytm-src && git rm -rf . -q
+          git checkout --orphan "ytm-src-${{ github.event.inputs.video }}" && git rm -rf . -q
           git clean -fdxq
           cp /tmp/o/* . && git add -A
-          git commit -qm "src frames" && git push -f origin ytm-src
+          git commit -qm "src frames" && git push -f origin "ytm-src-${{ github.event.inputs.video }}"
