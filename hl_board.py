@@ -166,7 +166,8 @@ def _first_ball(rows, floor, t_res):
     """First ball of the match that ends with the result banner at t_res, from the over counter alone.
     -> (start_estimate_s, first_reading_t, first_reading_balls) or None.
     1st innings = the counter run before the chase run; its first reading minus (balls bowled so far x seconds-per-ball) = first ball."""
-    runs = _innings_runs(_readings(rows, floor, t_res + 1.0))
+    raw = _readings(rows, floor, t_res + 1.0)
+    runs = _innings_runs(raw)
     if len(runs) < 2:
         return None
     last, prev = runs[-1], runs[-2]
@@ -177,6 +178,10 @@ def _first_ball(rows, floor, t_res):
     if sum(1 for t, f, x in rows if prev[0][0] <= t <= prev[-1][0] and CHASE2_RX.search(x or "")) >= 3:
         return None                                         # prev run has target/need banners -> it was a 2nd innings
     t1, b1 = prev[0][0], prev[0][1]
+    for rt, rb, _ in raw:                                   # the median filter drags the first readings up (0.0 -> 0.3): the earliest RAW reading of the run is the truth
+        if prev[0][0] - 300.0 <= rt <= prev[0][0] + 600.0 and rb <= b1:
+            t1, b1 = rt, rb
+            break
     span_b = prev[-1][1] - b1
     rate = (prev[-1][0] - t1) / span_b if span_b >= 12 else 40.0
     rate = min(max(rate, 8.0), 90.0)
