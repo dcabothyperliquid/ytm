@@ -418,6 +418,8 @@ def _fb_enabled(cfg=None):
 
 def _fb_call(args, tok):
     r = sh(["curl", "-sS", "--max-time", "1500"] + args, check=False)
+    if not (r.stdout or "").strip():
+        raise RuntimeError("FB no response (curl rc=%s): %s" % (getattr(r, "returncode", "?"), ((r.stderr or "")[-200:]).replace(tok, "***")))
     try:
         j = json.loads(r.stdout or "{}")
     except Exception:                                   # noqa
@@ -449,14 +451,38 @@ def _fb_upload(path, kind, title, desc):
         if not j.get("success"):
             raise RuntimeError("FB reel publish failed: %s" % json.dumps(j)[:200])
         return vid
-    if size > 1000 * 1024 * 1024:
-        raise RuntimeError("FB highlight file %d MB > 1 GB (simple upload limit)" % (size // 1048576))
-    j = _fb_call(["-X", "POST", "https://graph-video.facebook.com/v21.0/%s/videos" % page,
-                  "-F", "source=@" + path, "-F", "title=" + title[:200], "-F", "description=" + desc[:5000],
-                  "-F", "access_token=" + tok], tok)
-    if not j.get("id"):
-        raise RuntimeError("FB video upload failed: %s" % json.dumps(j)[:200])
-    return j["id"]
+    gv = "https://graph-video.facebook.com/v21.0/%s/videos" % page
+    j = _fb_call(["-X", "POST", gv, "-F", "upload_phase=start", "-F", "file_size=%d" % size, "-F", "access_token=" + tok], tok)
+    sess, fb_vid = j.get("upload_session_id"), j.get("video_id")
+    so, eo = int(j.get("start_offset") or 0), int(j.get("end_offset") or 0)
+    if not (sess and fb_vid):
+        raise RuntimeError("FB resumable start failed: %s" % json.dumps(j)[:200])
+    chunk_path = path + ".chunk"
+    try:
+        guard = 0
+        while so < size and guard < 4000:
+            guard += 1
+            n = max(1, eo - so)
+            with open(path, "rb") as fh:
+                fh.seek(so)
+                data = fh.read(n)
+            with open(chunk_path, "wb") as ch:
+                ch.write(data)
+            j = _fb_call(["-X", "POST", gv, "-F", "upload_phase=transfer", "-F", "start_offset=%d" % so,
+                          "-F", "upload_session_id=" + sess, "-F", "video_file_chunk=@" + chunk_path,
+                          "-F", "access_token=" + tok], tok)
+            nso, neo = int(j.get("start_offset") or 0), int(j.get("end_offset") or 0)
+            if nso <= so and nso < size:
+                raise RuntimeError("FB chunk not accepted at %d: %s" % (so, json.dumps(j)[:200]))
+            so, eo = nso, neo
+    finally:
+        if os.path.exists(chunk_path):
+            os.remove(chunk_path)
+    j = _fb_call(["-X", "POST", gv, "-F", "upload_phase=finish", "-F", "upload_session_id=" + sess,
+                  "-F", "title=" + title[:200], "-F", "description=" + desc[:5000], "-F", "access_token=" + tok], tok)
+    if not j.get("success"):
+        raise RuntimeError("FB resumable finish failed: %s" % json.dumps(j)[:200])
+    return fb_vid
 
 
 def _fb_status(fb_id):
