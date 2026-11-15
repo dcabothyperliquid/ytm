@@ -65,16 +65,10 @@ def _stats(segs):
 
 
 def pill_text(segs, info=None):
-    c = (info or {}).get("counts") or _stats(segs)
-    six, wk = c.get("six", 0), c.get("wicket", 0)
-    bits = []
-    if six >= 5:
-        bits.append("%d SIXES" % six)
-    if wk >= 3:
-        bits.append("%d WICKETS" % wk)
+    """banner pill: no six / four / wicket counts (Naem: not wanted) - only the finish hook."""
     if any(s["event"] == "finish" for s in segs):
-        bits.append("LAST OVER THRILLER")
-    return "  •  ".join(bits[:3]) or "MUST WATCH"
+        return "LAST BALL THRILLER" if (info or {}).get("last_ball") else "LAST OVER THRILLER"
+    return "MUST WATCH"
 
 
 def captions(title, vid, segs, chapters, info=None):
@@ -84,21 +78,17 @@ def captions(title, vid, segs, chapters, info=None):
     six, wk, fo = c.get("six", 0), c.get("wicket", 0), c.get("four", 0)
     teams = "%s vs %s" % (p["a"], p["b"]) if p["a"] and p["b"] else (p["tour"] or title)
     tour = p["tour"] or ""
-    hook = []
-    if six:
-        hook.append("%d chhakke" % six)
-    if wk:
-        hook.append("%d wicket" % wk)
-    stats = " + ".join(hook)
+    fin = any(s_["event"] == "finish" for s_ in segs)
+    stats = ("last ball tak gaya thriller" if (info or {}).get("last_ball") else "last over ka thriller") if fin else ""
     yt_t = ytm_style.highlight_title(title, seed=vid)
     ch = "\n".join("%s %s" % ("%d:%02d" % (t // 60, t % 60), ev.title()) for t, ev in chapters if ev not in ("dot",))
-    yt_d = ("\U0001F525 %s ke full highlights - %s!\n%s\n\nToss se lekar last over tak har chhakka, har wicket aur aakhri ball ka rona-dhona - sab kuch ek video me.\n"
+    yt_d = ("\U0001F525 %s ke full highlights - %s!\n%s\n\nToss se lekar aakhri ball tak ka pura thriller - sab kuch ek video me.\n"
             "Pura match miss kiya? Ab yahin dekho.\n\n⏱ Chapters:\n%s\n\n\U0001F3AC Full match: https://www.youtube.com/watch?v=%s\n"
             "\U0001F514 Subscribe karo aur aise hi local cricket ke highlights na miss karo.\n\n#cricket #highlights #localcricket #LML %s") % (
         teams, stats or "full match", tour, ch, vid, "#" + p["tour"].replace(" ", "") if p["tour"] else "")
-    fb = ("\U0001F525 %s\n\n\U0001F4A5 %s%s\n\nJisne ye match nahi dekha wo sach me kuch bada miss kar gaya \U0001F62E\n"
+    fb = ("\U0001F525 %s\n\n\U0001F4A5 %s\n\nJisne ye match nahi dekha wo sach me kuch bada miss kar gaya \U0001F62E\n"
           "Poora highlight dekho aur batao - sabse bada shot kaunsa tha? \U0001F447\n\nFull match: https://www.youtube.com/watch?v=%s\n\n"
-          "#cricket #highlights #localcricket #LML") % (teams.upper(), stats.upper() or "FULL HIGHLIGHTS", (" | %d chauke" % fo) if fo else "", vid)
+          "#cricket #highlights #localcricket #LML") % (teams.upper(), stats.upper() or "FULL HIGHLIGHTS", vid)
     return {"title": yt_t[:100], "description": yt_d[:4900]}, fb
 
 
@@ -110,15 +100,12 @@ def make(src, title, vid, segs, chapters, outdir, info=None):
     except Exception:
         pass
     try:
-        pick = next((s for s in sorted([s for s in segs if s["event"] == "six"], key=lambda s: -s.get("db", 0.0))), None) \
+        pick = next((s for s in segs if s["event"] == "finish"), None) \
+            or next((s for s in sorted([s for s in segs if s["event"] == "six"], key=lambda s: -s.get("db", 0.0))), None) \
             or next((s for s in segs if s["event"] == "wicket"), None) or segs[len(segs) // 2]
         frame = os.path.join(outdir, "_bn.jpg")
         _grab(src, (pick["start"] + pick["end"]) / 2.0 + 1.0, frame)
-        faces = []
-        try:
-            faces = find_faces(src, segs, outdir)
-        except Exception:
-            faces = []
+        faces = []                              # Haar face finder gave mostly false hits on wide match shots: players on the banner come later (captain photos)
         out = os.path.join(outdir, "banner.jpg")
         ytm_style.make_banner(frame if os.path.isfile(frame) else None, title, out, badge="HIGHLIGHTS", strip="WATCH ON:",
                               pill=pill_text(segs, info), faces=faces)

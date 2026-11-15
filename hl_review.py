@@ -139,7 +139,7 @@ def delete_asset_named(rel_id, name):
 def upload_asset(rel_id, path, name=None):
     name = name or os.path.basename(path)
     delete_asset_named(rel_id, name)
-    ctype = "video/mp4" if name.endswith(".mp4") else "text/plain"
+    ctype = "video/mp4" if name.endswith(".mp4") else ("image/jpeg" if name.endswith(".jpg") else "text/plain")
     sh(["curl", "-sS", "--fail", "-X", "POST", "-H", "Authorization: Bearer " + os.environ["GH_TOKEN"],
         "-H", "Content-Type: " + ctype, "--data-binary", "@" + path,
         "https://uploads.github.com/repos/%s/releases/%s/assets?name=%s" % (repo(), rel_id, name)])
@@ -195,6 +195,8 @@ def publish_match(vid, title, outdir, res, tag_full="hl-", window=None):
              "match": os.environ.get("HL_MATCH", "").strip() or None,
              "highlight": {"file": res["highlight"]["file"], "dur": res["highlight"]["dur"],
                            "chapters": res["highlight"]["chapters"],
+                           "banner": res["highlight"].get("banner"), "yt_caption": res["highlight"].get("yt_caption"),
+                           "fb_caption": res["highlight"].get("fb_caption"),
                            "preview": preview_url(vid, "highlights_p.mp4")},
              "shorts": [{k: s[k] for k in ("id", "file", "event", "score", "start", "end", "title", "heard", "preview_name", "label") if k in s}
                         | {"preview": preview_url(vid, s["preview_name"])} for s in res["shorts"]]}
@@ -551,6 +553,32 @@ def _hl_thumb(path, yid, m, it):
                 os.remove(f)
 
 
+def _set_ready_banner(m, it, yid):
+    """Use the banner.jpg that was made with the highlight (release asset) as the YouTube thumbnail. False -> caller falls back."""
+    if not (it.get("banner") or it.get("banner_url")):
+        return False
+    try:
+        import urllib.request
+        out = "/tmp/hlbanner_ready.jpg"
+        if it.get("banner_url"):                    # banner kept on the ytm-data branch (public raw url)
+            with open(out, "wb") as fh:
+                fh.write(urllib.request.urlopen(it["banner_url"], timeout=40).read())
+        else:
+            _download_asset(m["release_id"], it["banner"], out)
+        req = urllib.request.Request("https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=%s&uploadType=media" % yid,
+                                     data=open(out, "rb").read(), method="POST",
+                                     headers={"Authorization": "Bearer " + _oauth_token(), "Content-Type": "image/jpeg"})
+        urllib.request.urlopen(req, timeout=40).read()
+        log("highlight banner set as thumbnail", yid)
+        return True
+    except Exception as e:                          # noqa
+        log("ready banner failed, falling back to auto thumbnail:", str(e)[:160])
+        return False
+    finally:
+        if os.path.exists("/tmp/hlbanner_ready.jpg"):
+            os.remove("/tmp/hlbanner_ready.jpg")
+
+
 def _fb_texts(m, sid, it):
     if sid == "highlight":
         t = _hl_title(m)
@@ -588,10 +616,11 @@ def upload_approved():
         try:
             _download_asset(m["release_id"], it["file"], path)
             if sid == "highlight":
-                title = _hl_title(m)[:100]
+                yc = it.get("yt_caption") or {}
+                title = (yc.get("title") or _hl_title(m))[:100]
                 ch = it.get("chapters") or []
-                desc = "Match highlights.\n\n" + "\n".join("%s %s" % (_fmt_ts(t), ev) for t, ev in ch) \
-                    + "\n\nFull match: https://www.youtube.com/watch?v=%s" % m["vid"]
+                desc = yc.get("description") or ("Match highlights.\n\n" + "\n".join("%s %s" % (_fmt_ts(t), ev) for t, ev in ch)
+                                                 + "\n\nFull match: https://www.youtube.com/watch?v=%s" % m["vid"])
                 tags = ["highlights", "live", "match"]
             else:
                 title = it["title"] if "#shorts" in it["title"].lower() else (it["title"][:92] + " #Shorts")
@@ -602,10 +631,14 @@ def upload_approved():
                 yid = _youtube_upload(path, title, desc, privacy, tags)
                 log("uploaded", sid, "->", yid)
                 if sid == "highlight":
-                    _hl_thumb(path, yid, m, it)
+                    if not _set_ready_banner(m, it, yid):
+                        _hl_thumb(path, yid, m, it)
             fb_rec, fb_err = None, None
             if tg != "yt" and fb_on:                    # Facebook is best-effort: never breaks the YouTube result
                 ft, fd = _fb_texts(m, sid, it)
+                if sid == "highlight" and it.get("fb_caption"):
+                    ft = ((it.get("yt_caption") or {}).get("title") or ft)[:100]
+                    fd = it["fb_caption"]
                 fb_rec, fb_err = _fb_post_item(path, "highlight" if sid == "highlight" else "short", ft, fd)
                 log("facebook", sid, "->", (fb_rec or {}).get("id"), (fb_rec or {}).get("status"), fb_err or "")
 
