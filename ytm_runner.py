@@ -863,9 +863,8 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
     # other channels' logos/watermarks (permission-holder OK'd removal): REMOVED from the source picture with delogo (filled from the
     # surrounding pixels), before our tag/logo go on. Boxes (1280x720): bottom-left channel logo, right-edge watermark above the
     # scoreboard, bottom-right corner, two small icons either side of the bottom-centre mark. YTM_REMOVE="x:y:w:h;..." overrides, =off disables.
-    # Default: NO delogo boxes (they showed as blur patches on the ticker ends / under the timer / over the pitch once the source
-    # watermarks were gone). The three bottom-centre boxes (ACL mark + side icons) are used only when the mark probe found a static
-    # watermark there (strip=True). Old corner boxes: YTM_REMOVE="1:695:150:24;1155:589:122:30;1130:695:148:24" to bring them back.
+    # Default boxes: 3 corner/edge marks + 3 bottom-centre watermark boxes (the latter only while strip=True, i.e. always unless
+    # YTM_MARK_DETECT=on and the probe says there is no watermark). Applied to the SOURCE picture before our tag/logo go on.
     rm = os.environ.get("YTM_REMOVE", "").strip() or ("1:695:150:24;1155:589:122:30;1130:695:148:24"   # Tensports etc. corner logos/watermarks: always removed
           + (";470:578:48:36;764:578:48:36;508:576:256:38" if strip else ""))
     if rm.lower() != "off":
