@@ -860,6 +860,14 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
         for bx in boxes.split(";"):
             if bx.count(":") == 3:
                 chain += ",delogo=x=%s:y=%s:w=%s:h=%s" % tuple(bx.split(":"))
+    # other channels' logos/watermarks (permission-holder OK'd removal): REMOVED from the source picture with delogo (filled from the
+    # surrounding pixels), before our tag/logo go on. Boxes (1280x720): bottom-left channel logo, right-edge watermark above the
+    # scoreboard, bottom-right corner, two small icons either side of the bottom-centre mark. YTM_REMOVE="x:y:w:h;..." overrides, =off disables.
+    rm = os.environ.get("YTM_REMOVE", "").strip() or "1:695:150:24;1155:589:122:30;1130:695:148:24;470:578:48:36;764:578:48:36"
+    if rm.lower() != "off":
+        for bx in rm.split(";"):
+            if re.fullmatch(r"\d{1,4}:\d{1,4}:\d{1,4}:\d{1,4}", bx.strip()):
+                chain += ",delogo=x=%s:y=%s:w=%s:h=%s" % tuple(bx.strip().split(":"))
     # centre-bottom "ACL" mark (permission-holder OK'd removal): covered by a solid branded strip with our tag (no blur smear).
     # YTM_TAG="" / "off" -> strip off and the mark is delogo-smeared instead. YTM_TAG_POS="cx:cy", YTM_TAG_BOX="w:h" (1280x720 frame).
     tag = os.environ.get("YTM_TAG", "LML").strip() if strip else "off"
@@ -881,14 +889,14 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
     # other channels' corner marks (permission-holder OK'd removal): small opaque branded patches. Default boxes = the usual
     # bottom-left channel logo, a right-edge watermark just above the scoreboard and the bottom-right corner.
     # YTM_PATCHES="x:y:w:h;x:y:w:h" (1280x720 frame) overrides, YTM_PATCHES=off disables.
-    pt = os.environ.get("YTM_PATCHES", "").strip() or "0:696:150:24;1150:592:130:26;1130:696:150:24"
+    pt = os.environ.get("YTM_PATCHES", "off").strip() or "off"   # patches OFF by default: other channels' marks are REMOVED with delogo (YTM_REMOVE) instead
     if pt.lower() != "off" and os.path.isfile(font):
         for bx in pt.split(";"):
             if re.fullmatch(r"\d{1,4}:\d{1,4}:\d{1,4}:\d{1,4}", bx.strip()):
                 px, py, pw, ph = bx.strip().split(":")
                 chain += (",drawbox=x=%s:y=%s:w=%s:h=%s:color=0x0b3d91:t=fill"
                           ",drawtext=fontfile=%s:text='LML':fontcolor=white:fontsize=%d:x=%s+(%s-text_w)/2:y=%s+(%s-text_h)/2"
-                          % (px, py, pw, ph, font, max(10, int(ph) - 10), px, pw, py, ph))
+                          % (px, py, pw, ph, font, max(9, min(int(ph) - 10, int(pw) // 4)), px, pw, py, ph))
     if logo_spec:                                                 # auto-sized to the detected source logo
         lw, pos = str(int(logo_spec["w"])), "%d:%d" % (int(logo_spec["x"]), int(logo_spec["y"]))
     fc = chain + "[bg];[1:v]scale=%s:-1[lg];[bg][lg]overlay=%s,split=2[v][s];[s]fps=1/20,scale=640:-1[snap]" % (lw, pos)
