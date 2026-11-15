@@ -897,7 +897,7 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False):
                 chain += ",drawbox=x=%s:y=%s:w=%s:h=%s:color=black:t=fill" % tuple(bx.strip().split(":"))
     # centre-bottom "ACL" mark (permission-holder OK'd removal): covered by a solid branded strip with our tag (no blur smear).
     # YTM_TAG="" / "off" -> strip off and the mark is delogo-smeared instead. YTM_TAG_POS="cx:cy", YTM_TAG_BOX="w:h" (1280x720 frame).
-    tag = os.environ.get("YTM_TAG", "LML SPORTS" if permitted else "off").strip() if strip else "off"      # bottom-centre brand tag OFF by default (YTM_TAG=LML brings the text strip back)
+    tag = os.environ.get("YTM_TAG", "off").strip() if strip else "off"      # bottom-centre brand tag OFF by default (YTM_TAG=LML brings the text strip back)
     font = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     cx, cy = (os.environ.get("YTM_TAG_POS", ("636:596" if permitted else "646:588")).split(":") + ["588"])[:2]
     bw, bh = (os.environ.get("YTM_TAG_BOX", ("330:38" if permitted else "250:64")).split(":") + ["64"])[:2]
@@ -925,9 +925,29 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False):
                 chain += (",drawbox=x=%s:y=%s:w=%s:h=%s:color=0x0b3d91:t=fill"
                           ",drawtext=fontfile=%s:text='LML':fontcolor=white:fontsize=%d:x=%s+(%s-text_w)/2:y=%s+(%s-text_h)/2"
                           % (px, py, pw, ph, font, max(9, min(int(ph) - 10, int(pw) // 4)), px, pw, py, ph))
+    wm = None
+    if permitted and strip and os.environ.get("YTM_WM", "on").strip().lower() != "off":
+        # centre-bottom source watermark (x483-790,y582-610) is covered by a dark bar carrying OUR logo + text.
+        # YTM_WM_BOX="x:y:w:h" (1280x720 frame), YTM_WM_TEXT, YTM_WM=off disables.
+        bx_ = os.environ.get("YTM_WM_BOX", "471:577:330:38").strip()
+        wt = os.environ.get("YTM_WM_TEXT", "LOCAL MATCH LIVE").strip()
+        if re.fullmatch(r"\d{1,4}:\d{1,4}:\d{1,4}:\d{1,4}", bx_):
+            wx, wy, ww, wh = [int(v) for v in bx_.split(":")]
+            chain += ",drawbox=x=%d:y=%d:w=%d:h=%d:color=black@0.99:t=fill" % (wx, wy, ww, wh)
+            lh = wh - 6
+            lwid = int(lh * 708 / 419.0)
+            gx = wx + 12
+            if os.path.isfile(font) and re.fullmatch(r"[A-Za-z0-9 @._&|-]{1,40}", wt):
+                chain += (",drawtext=fontfile=%s:text='%s':fontcolor=white:fontsize=%d:x=%d:y=%d+(%d-text_h)/2"
+                          % (font, wt, max(12, wh // 2), gx + lwid + 14, wy, wh))
+            wm = (lh, gx, wy + 3)
     if logo_spec:                                                 # auto-sized to the detected source logo
         lw, pos = str(int(logo_spec["w"])), "%d:%d" % (int(logo_spec["x"]), int(logo_spec["y"]))
-    fc = chain + "[bg];[1:v]scale=%s:-1[lg];[bg][lg]overlay=%s,split=2[v][s];[s]fps=1/20,scale=640:-1[snap]" % (lw, pos)
+    if wm:
+        fc = chain + ("[bg];[1:v]split=2[l1][l2];[l1]scale=%s:-1[lg];[l2]scale=-1:%d[lg2];[bg][lg]overlay=%s[o1];[o1][lg2]overlay=%d:%d"
+                      ",split=2[v][s];[s]fps=1/20,scale=640:-1[snap]" % (lw, wm[0], pos, wm[1], wm[2]))
+    else:
+        fc = chain + "[bg];[1:v]scale=%s:-1[lg];[bg][lg]overlay=%s,split=2[v][s];[s]fps=1/20,scale=640:-1[snap]" % (lw, pos)
     return (base + ["-i", logo] + (["-i", tagimg] if use_img else []) + ["-filter_complex", fc, "-map", "[v]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", os.environ.get("YTM_PRESET", "veryfast"), "-profile:v", "high", "-crf", "20",
             "-maxrate", "4000k" if fb else "6000k", "-bufsize", "8000k" if fb else "12000k",      # Facebook wants <= ~4 Mbps at 720p
