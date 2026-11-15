@@ -875,6 +875,13 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False):
                 chain += (",split[pa%d][pb%d];[pb%d]crop=%s:%s:%s:%s,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
                           "a='255*min(1,min(X,%d-X)/8)*min(1,min(Y,%d-Y)/8)'[pp%d];[pa%d][pp%d]overlay=%s:%s:format=auto"
                           % (i, i, i, cw_, ch_, cx_, sy_, int(cw_) - 1, int(ch_) - 1, i, i, i, cx_, cy_))
+        # bottom ticker bar carries the source's name/contact in scrolling text -> replaced by our own ticker (YTM_TICKER text, =off keeps the source bar)
+        tk = os.environ.get("YTM_TICKER", "LML SPORTS  |  LOCAL MATCH LIVE  |  LIVE CRICKET & MORE SPORTS  |  SUBSCRIBE LML SPORTS").strip()
+        if tk.lower() != "off":
+            chain += ",drawbox=x=0:y=689:w=iw:h=31:color=black:t=fill"
+            _f = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+            if os.path.isfile(_f) and re.fullmatch(r"[A-Za-z0-9 @._&|-]{1,120}", tk):
+                chain += (",drawtext=fontfile=%s:text='%s':fontcolor=0xffd400:fontsize=22:y=h-30:x=w-mod(t*110\\,w+text_w)" % (_f, tk))
     # Source-channel marks (permission-holder OK'd removal) are removed from the SOURCE picture before our logo goes on.
     # YTM_REMOVE="x:y:w:h;..." overrides the delogo boxes (1280x720 frame), =off disables.
     # Ten 10 centre-bottom watermark (icon + text + icon) -> delogo; on plain grass it leaves no visible patch.
