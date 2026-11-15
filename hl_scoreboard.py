@@ -170,11 +170,14 @@ def events_from_states(states, lag=4.0):
                 kind = "six"
             elif dw == 0 and db == 0 and dr >= 1:
                 kind = "noball" if dr >= 2 else "wide"
-            elif dw == 0 and dr == 0 and db == 1:
-                kind = "dot"
+            elif dw == 0 and db == 1 and dr in (0, 1, 2, 3):
+                kind = "dot"            # a quiet LEGAL ball (dot / 1 / 2 / 3 runs). Before 2026-11-15 only dr == 0 counted: every single / double
+                                        # was invisible, so the match's FIRST ball and the WINNING ball (2 runs) never became events
+            elif dw == 0 and db >= 2 and dr <= 3 * db:
+                kind = "dot"            # the operator typed the score only every 2-3 balls: still a legal ball at that moment
             if kind:
                 events.append({"kind": kind, "t": t, "t_end": t + 2.0, "t_state": s["t"], "inn": inn, "balls": s["balls"], "mx": s["mx"],
-                               "text": "%d-%d %s" % (s["runs"], s["wk"], "%d.%d" % divmod(s["balls"], 6)), "db": 0.0})
+                               "runs": dr, "text": "%d-%d %s" % (s["runs"], s["wk"], "%d.%d" % divmod(s["balls"], 6)), "db": 0.0})
         prev = s
     return events, innings
 
@@ -238,6 +241,7 @@ def align_events(events, onsets, default_lag=8.0, back=None, state_ts=None):
             cand = [(abs(e["t_state"] - tb), tb) for tb, k in onsets if k == e["kind"] and e["t_state"] - 30.0 <= tb <= e["t_state"] + 4.0]
             if cand:
                 tb = min(cand)[1]
+                e["t_banner"] = tb
                 e["t_hit"] = max(0.0, tb - bk.get(k, 2.0))
                 lags.append(e["t_state"] - e["t_hit"])
     lags.sort()
@@ -259,7 +263,7 @@ def align_events(events, onsets, default_lag=8.0, back=None, state_ts=None):
             continue
         events.append({"kind": k, "t": max(0.0, tb - bk.get(k, 2.0)), "t_end": max(0.0, tb - bk.get(k, 2.0)), "t_hit": max(0.0, tb - bk.get(k, 2.0)),
                        "t_state": tb + lag, "inn": (min(events, key=lambda e: abs(e["t_hit"] - tb))["inn"] if events else 0),
-                       "balls": 0, "mx": 0, "text": "graphic %s" % k, "db": 0.0, "from_banner": True})
+                       "balls": 0, "mx": 0, "text": "graphic %s" % k, "db": 0.0, "from_banner": True, "t_banner": tb})
         added += 1
     events.sort(key=lambda e: e["t"])
     return lag, len(lags), added
@@ -443,5 +447,6 @@ def analyze_window(H, src, dur):
         done_t = sorted(t for t, d in toss_seen if d)
         toss_start = max(0.0, (done_t[0] if done_t else min(t for t, _ in toss_seen)) - 3.0)
         H.log("scoreboard: toss banner first seen at %.0fs -> match starts at %.0fs" % (toss_start + 3.0, toss_start))
-    return {"toss_start": toss_start, "events": events, "innings": [[i[0]["t"], i[-1]["t_last"]] for i in innings], "break": brk, "mx": mx,
+    toss_done = bool(toss_seen) and any(d for _, d in toss_seen)
+    return {"toss_start": toss_start, "toss_done": toss_done, "t_final": last_inn[-1]["t"], "events": events, "innings": [[i[0]["t"], i[-1]["t_last"]] for i in innings], "break": brk, "mx": mx,
             "last_over_start": lo_t, "death": death, "kinds": kinds}

@@ -62,6 +62,8 @@ MUST = ("wicket", "six", "noball", "wide")
 DEATH_FRAC = 0.18           # last 18% of an innings = death overs
 FILL_GAP = 100              # s without any clip in the early overs -> add one dot ball as filler
 TOSS_MAX = 90.0
+FIRST_LEAD = 8.0              # scoreboard mode, no toss scene: start this long before the first ball (walk-in / run-up)
+FINISH_S = float(os.environ.get("HL_FINISH_S", "45"))      # scoreboard mode: win + celebration after the deciding ball (finals: set HL_FINISH_S=120+ to run until the cup is lifted)
 TOSS_SB_MAX = 20.0            # scoreboard mode: toss banner + decision, measured from the banner onset
 END_MAX = 360.0
 SNAP_BACK_MAX = 4.0          # a clip may start up to this much earlier so the commentator's sentence is heard from its first word
@@ -223,15 +225,22 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None, recap=None):
     sb = scoreboard analysis (hl_scoreboard.analyze_window): exact ball events / innings / last over instead of commentary keywords."""
     if sb:
         ts = float(sb.get("toss_start") or 0.0)                     # first frame of THIS match's toss banner (the window may still open on the previous match's result)
-        first = min([e["t"] for e in sb["events"] if e["kind"] != "dot" and e["t"] > ts + 12.0] or [ts + 70.0])
-        te = min(ts + TOSS_SB_MAX, max(ts + 15.0, first - 10.0), dur * 0.25)
-        toss_clips = [(ts, te)]                                     # toss banner + captains + decision, uninterrupted
-        play_from = min(te, first - 6.0)
+        # the FIRST legal ball of the match (dot / single / four ... all count since 2026-11-15; before, only boundaries did, so the
+        # reel opened on the 5th ball)
+        first = min([e["t"] for e in sb["events"] if e["t"] > ts + 12.0 and e["kind"] != "wide"] or [ts + 70.0])
+        if sb.get("toss_done", True):
+            te = min(ts + TOSS_SB_MAX, max(ts + 15.0, first - 10.0), dur * 0.25)
+            toss_clips = [(ts, te)]                                 # toss banner + captains + decision, uninterrupted
+            play_from = min(te, first - 6.0)
+        else:                                                       # no real toss scene in this window (banner only, players standing around): do not show 20 s of nothing
+            toss_clips = []
+            play_from = max(0.0, first - FIRST_LEAD)
         lo_t = sb["last_over_start"]
         real = [e for e in sb["events"] if e["t"] > lo_t - 2.0]
         t_win = max([e["t_end"] for e in real] or [dur - SB_END_MAX])
-        end_a = min(dur, max(play_from + 30.0, t_win + 8.0))        # the match-deciding over ball by ball incl. the WINNING shot, then win + celebration
-        end_b = min(dur, end_a + 32.0)
+        t_fin = float(sb.get("t_final") or 0.0)                     # first time the FINAL scoreboard state (target reached / all out) shows: the winning shot is already behind it
+        end_a = min(dur, max(play_from + 30.0, t_win + 8.0, t_fin + 2.0 if t_fin else 0.0))   # the match-deciding over ball by ball incl. the WINNING shot, then win + celebration
+        end_b = min(dur, end_a + FINISH_S)
         br_a, br_b = sb["break"]
         ev = [dict(e) for e in sb["events"] if play_from <= e["t"] < end_a]
         for e in ev:
@@ -685,13 +694,66 @@ def shot_time(src, t0, wb=SHOT_WB, wa=SHOT_WA, min_t=0.0, need_replay=False):
     return min(cands, key=lambda c: abs(c - t0))
 
 
+CUT_T = 40.0                # mean abs pixel difference (0-255, 64x36 frames) of a hard camera cut; pans / zooms stay < 20, replay wipes are 2-5 frames long
+CUT_CLUSTER = 4.5           # s: cuts closer than this belong to the same cut-away sequence (shot -> boundary -> close-up)
+CUT_WINDOW = 14.0           # the SIX / FOUR / WICKET graphic shows at most this long after the shot
+
+
+def hard_cuts(src, a, b, fps=10):
+    """times of single-frame hard cuts in [a, b] (gradual wipes like the REPLAY swoosh are several frames long -> not counted)"""
+    t, fr = _small_frames(src, max(0.0, a), b, fps=fps)
+    if len(t) < 8:
+        return []
+    d = np.abs(np.diff(fr, axis=0)).mean(axis=(1, 2, 3))
+    out = []
+    for i in range(1, len(d) - 1):
+        if d[i] > CUT_T and d[i - 1] < 28.0 and d[i + 1] < 28.0:
+            out.append(float(t[i + 1]))
+    return out
+
+
+def shot_cut_time(src, t_banner):
+    """Exact moment of the shot from the VIDEO, anchored on the graphic: the wide pitch view cuts away the instant the ball is hit
+    (2026-11-15 North Goa final: graphic came only ~3.5 s after the cut, the old fixed 9.5 s back-offset put every clip ~6 s too early, so
+    clips opened on 10 s of players standing around). -> first cut of the LAST cut-away cluster before the graphic, or None."""
+    cuts = [c for c in hard_cuts(src, t_banner - CUT_WINDOW - 2.0, t_banner + 0.5) if t_banner - CUT_WINDOW <= c <= t_banner + 0.3]
+    if not cuts:
+        return None
+    first = cuts[-1]
+    for c in reversed(cuts[:-1]):
+        if first - c < CUT_CLUSTER:
+            first = c
+        else:
+            break
+    return first
+
+
 def refine_shots(src, events, log=None):
-    """move every six / four / wicket event onto its real shot time. -> (moved, not_found)"""
+    """move every six / four / wicket event onto its real shot time. -> (moved, not_found)
+    1) graphic known -> the video cut right before it (shot_cut_time);  2) old pitch-view detector;
+    3) events with no exact time are shifted by the delay measured on the exact ones (per VOD, not a fixed constant)."""
     moved = nf = 0
     prev = -1e9
     for e in sorted(events, key=lambda x: x["t_hit"]):
         if e["kind"] not in ("six", "four", "wicket"):
             continue
+        st = None
+        if e.get("t_banner") is not None:
+            try:
+                st = shot_cut_time(src, float(e["t_banner"]))
+            except Exception as ex:                                 # noqa
+                st = None
+                if log:
+                    log("shot_cut_time failed %.0f: %s" % (e["t_banner"], ex))
+            if st is not None and st <= prev + 6.0:                 # two balls cannot be < 6 s apart: that cut belongs to the previous ball
+                st = None
+            if st is not None:
+                e["t_banner_est"] = e["t_hit"]
+                e["exact"] = True
+                e["t"] = e["t_end"] = e["t_hit"] = st
+                prev = st
+                moved += 1
+                continue
         try:
             st = shot_time(src, e["t_hit"], min_t=prev + 8.0)
             if st is None:                                          # the estimate sat on the replay: the live ball is further back
@@ -710,6 +772,30 @@ def refine_shots(src, events, log=None):
         e["t"] = e["t_end"] = e["t_hit"] = st
         prev = st
         moved += 1
+    # per-VOD calibration: delay (graphic -> shot) and (score typed -> shot) measured on the exact events, applied to the rest
+    ex = [e for e in events if e.get("exact")]
+    if len(ex) >= 3:
+        back = {}
+        for k in ("six", "four", "wicket"):
+            v = sorted(e["t_banner"] - e["t"] for e in ex if e["kind"] == k and e.get("t_banner") is not None)
+            if len(v) >= 2 or (k == "four" and v):
+                back[k] = v[len(v) // 2]
+        allv = sorted(e["t_banner"] - e["t"] for e in ex if e.get("t_banner") is not None)
+        lagv = sorted(e["t_state"] - e["t"] for e in ex if e.get("t_state") is not None)
+        gen_back = allv[len(allv) // 2] if allv else None
+        lag = lagv[len(lagv) // 2] if lagv else None
+        if log:
+            log("calibration from %d exact shots: graphic->shot %s, score->shot %.1fs" % (len(ex), {k: round(v, 1) for k, v in back.items()}, lag if lag is not None else -1))
+        for e in events:
+            if e.get("exact"):
+                continue
+            if e.get("t_banner") is not None and (back.get(e["kind"]) is not None or gen_back is not None):
+                t = e["t_banner"] - (back.get(e["kind"]) if back.get(e["kind"]) is not None else gen_back)
+            elif e.get("t_state") is not None and lag is not None and not e.get("from_banner"):
+                t = e["t_state"] - lag
+            else:
+                continue
+            e["t"] = e["t_end"] = e["t_hit"] = max(0.0, t)
     events.sort(key=lambda x: x["t"])
     return moved, nf
 
