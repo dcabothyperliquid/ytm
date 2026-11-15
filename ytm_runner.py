@@ -836,7 +836,7 @@ def _tee(rtmp, fb):
     return "[f=flv]%s|[f=flv:onfail=ignore]%s" % (rtmp, fb)
 
 
-def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
+def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False):
     yt, fb = outputs()
     base = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-stats", "-reconnect", "1", "-reconnect_streamed", "1",
             "-reconnect_delay_max", "5", "-fflags", "+genpts", "-i", hls]
@@ -853,13 +853,28 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
         boxes = "off"   # NO blur: top-right is covered by our big corner circle instead of delogo. (old box 1126:1:152:146) source top-right badge (Ten 10) removed with delogo, then our TRANSPARENT logo goes on top. YTM_DELOGO=off disables.
     # fallback when the probe finds no static logo (animated / flipping source logos change every frame):
     # big circle tucked into the top-right corner (slight bleed past the edge) so a corner badge stays hidden.
-    pos = os.environ.get("YTM_LOGO_POS", "W-w+25:-25")
-    lw = os.environ.get("YTM_LOGO_W", "210")
+    # permitted source (YTM_STRIP_CHANNELS allowlist): our logo sits centred on the source's round top-right logo (centre 1186,89),
+    # whose pixels are removed first with a tight circle mask (no rectangle smear). Any other source: plain logo, nothing removed.
+    pos = os.environ.get("YTM_LOGO_POS", "1101:39" if permitted else "W-w-4:22")
+    lw = os.environ.get("YTM_LOGO_W", "170" if permitted else "150")
     chain = "[0:v]fps=30,scale=1280:720:flags=lanczos:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1"
     if boxes.lower() != "off":
         for bx in boxes.split(";"):
             if bx.count(":") == 3:
                 chain += ",delogo=x=%s:y=%s:w=%s:h=%s" % tuple(bx.split(":"))
+    if permitted:
+        mk = os.environ.get("YTM_RM_MASK", "mask_ten10_tr.png").strip()
+        if mk.lower() != "off" and os.path.isfile(mk):
+            chain += ",removelogo=filename=%s" % mk                # tight circle mask on the top-right round logo
+        # centre-bottom watermark: overwritten with real grass copied from just below it (feathered edges, no blur).
+        # YTM_CLEAN="x:y:w:h:srcy;..." (1280x720 frame), =off disables.
+        cl = os.environ.get("YTM_CLEAN", "470:576:340:40:628").strip()
+        for i, bx in enumerate([] if cl.lower() == "off" else cl.split(";")):
+            if re.fullmatch(r"\d{1,4}:\d{1,4}:\d{1,4}:\d{1,4}:\d{1,4}", bx.strip()):
+                cx_, cy_, cw_, ch_, sy_ = bx.strip().split(":")
+                chain += (",split[pa%d][pb%d];[pb%d]crop=%s:%s:%s:%s,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
+                          "a='255*min(1,min(X,%d-X)/8)*min(1,min(Y,%d-Y)/8)'[pp%d];[pa%d][pp%d]overlay=%s:%s:format=auto"
+                          % (i, i, i, cw_, ch_, cx_, sy_, int(cw_) - 1, int(ch_) - 1, i, i, i, cx_, cy_))
     # Source-channel marks (permission-holder OK'd removal) are removed from the SOURCE picture before our logo goes on.
     # YTM_REMOVE="x:y:w:h;..." overrides the delogo boxes (1280x720 frame), =off disables.
     # Ten 10 centre-bottom watermark (icon + text + icon) -> delogo; on plain grass it leaves no visible patch.
@@ -868,17 +883,17 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
         for bx in rm.split(";"):
             if re.fullmatch(r"\d{1,4}:\d{1,4}:\d{1,4}:\d{1,4}", bx.strip()):
                 chain += ",delogo=x=%s:y=%s:w=%s:h=%s" % tuple(bx.strip().split(":"))
-    bo = os.environ.get("YTM_BLACKOUT", "0:691:153:25").strip()          # source logo on the left end of the black ticker bar -> solid black (YTM_BLACKOUT=off disables)
+    bo = os.environ.get("YTM_BLACKOUT", "0:691:153:25" if permitted else "off").strip()          # source logo on the left end of the black ticker bar -> solid black (YTM_BLACKOUT=off disables)
     if bo.lower() != "off":
         for bx in bo.split(";"):
             if re.fullmatch(r"\d{1,4}:\d{1,4}:\d{1,4}:\d{1,4}", bx.strip()):
                 chain += ",drawbox=x=%s:y=%s:w=%s:h=%s:color=black:t=fill" % tuple(bx.strip().split(":"))
     # centre-bottom "ACL" mark (permission-holder OK'd removal): covered by a solid branded strip with our tag (no blur smear).
     # YTM_TAG="" / "off" -> strip off and the mark is delogo-smeared instead. YTM_TAG_POS="cx:cy", YTM_TAG_BOX="w:h" (1280x720 frame).
-    tag = os.environ.get("YTM_TAG", "LML").strip() if strip else "off"      # bottom-centre brand tag OFF by default (YTM_TAG=LML brings the text strip back)
+    tag = os.environ.get("YTM_TAG", "off").strip() if strip else "off"      # bottom-centre brand tag OFF by default (YTM_TAG=LML brings the text strip back)
     font = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-    cx, cy = (os.environ.get("YTM_TAG_POS", "641:595").split(":") + ["588"])[:2]
-    bw, bh = (os.environ.get("YTM_TAG_BOX", "356:52").split(":") + ["64"])[:2]
+    cx, cy = (os.environ.get("YTM_TAG_POS", "646:588").split(":") + ["588"])[:2]
+    bw, bh = (os.environ.get("YTM_TAG_BOX", "250:64").split(":") + ["64"])[:2]
     tagimg = os.environ.get("YTM_TAG_IMG", "off").strip()                # bottom-centre tag image OFF by default (YTM_TAG_IMG=lml_tag.png brings it back)
     use_img = bool(strip and tagimg and tagimg.lower() != "off" and os.path.isfile(tagimg)
                    and all(re.fullmatch(r"\d{1,4}", v) for v in (cx, cy, bw, bh)))
@@ -938,7 +953,11 @@ class Relay:
                 self.st["logo_probe"] = {"video_id": vid, "spec": spec, "ver": LOGO_PROBE_VER, "at": int(time.time())}
         _y, _f = outputs()
         self.st["fb_on"], self.st["yt_on"] = bool(_f), bool(_y)
-        return self._popen(ffmpeg_cmd(hls, self.rtmp, strip, spec), stderr=self._elog)
+        ch = str((self.st.get("relay") or {}).get("channel") or "").strip().lstrip("@").lower()
+        allow = {x.strip().lstrip("@").lower() for x in os.environ.get("YTM_STRIP_CHANNELS", "Ten10sportslive-x6e").split(",") if x.strip()}
+        permitted = bool(ch) and ch in allow                 # source marks are removed ONLY for channels listed here (those that gave written permission)
+        self.st["strip_permitted"] = permitted
+        return self._popen(ffmpeg_cmd(hls, self.rtmp, strip, spec, permitted), stderr=self._elog)
 
     def _tail(self):
         """last ffmpeg output (stream key masked) -> state, so it is visible without Actions logs"""
