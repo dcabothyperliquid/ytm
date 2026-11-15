@@ -850,11 +850,11 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
     # YTM_LOGO_POS = overlay expr (default top-right), YTM_LOGO_W = logo width px (default 150).
     boxes = os.environ.get("YTM_DELOGO", "").strip()
     if not boxes:
-        boxes = "1126:1:152:146"   # source top-right badge (Ten 10) removed with delogo, then our TRANSPARENT logo goes on top. YTM_DELOGO=off disables.
+        boxes = "off"   # NO blur: top-right is covered by our big corner circle instead of delogo. (old box 1126:1:152:146) source top-right badge (Ten 10) removed with delogo, then our TRANSPARENT logo goes on top. YTM_DELOGO=off disables.
     # fallback when the probe finds no static logo (animated / flipping source logos change every frame):
     # big circle tucked into the top-right corner (slight bleed past the edge) so a corner badge stays hidden.
-    pos = os.environ.get("YTM_LOGO_POS", "W-w-4:22")
-    lw = os.environ.get("YTM_LOGO_W", "150")
+    pos = os.environ.get("YTM_LOGO_POS", "W-w+25:-25")
+    lw = os.environ.get("YTM_LOGO_W", "210")
     chain = "[0:v]fps=30,scale=1280:720:flags=lanczos:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1"
     if boxes.lower() != "off":
         for bx in boxes.split(";"):
@@ -863,7 +863,7 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
     # Source-channel marks (permission-holder OK'd removal) are removed from the SOURCE picture before our logo goes on.
     # YTM_REMOVE="x:y:w:h;..." overrides the delogo boxes (1280x720 frame), =off disables.
     # Ten 10 centre-bottom watermark (icon + text + icon) -> delogo; on plain grass it leaves no visible patch.
-    rm = os.environ.get("YTM_REMOVE", "").strip() or (";".join(["470:578:48:36", "764:578:48:36", "508:576:256:38"]) if strip else "off")
+    rm = os.environ.get("YTM_REMOVE", "").strip() or "off"
     if rm.lower() != "off":
         for bx in rm.split(";"):
             if re.fullmatch(r"\d{1,4}:\d{1,4}:\d{1,4}:\d{1,4}", bx.strip()):
@@ -875,15 +875,18 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
                 chain += ",drawbox=x=%s:y=%s:w=%s:h=%s:color=black:t=fill" % tuple(bx.strip().split(":"))
     # centre-bottom "ACL" mark (permission-holder OK'd removal): covered by a solid branded strip with our tag (no blur smear).
     # YTM_TAG="" / "off" -> strip off and the mark is delogo-smeared instead. YTM_TAG_POS="cx:cy", YTM_TAG_BOX="w:h" (1280x720 frame).
-    tag = os.environ.get("YTM_TAG", "off").strip() if strip else "off"      # bottom-centre brand tag OFF by default (YTM_TAG=LML brings the text strip back)
+    tag = os.environ.get("YTM_TAG", "LML").strip() if strip else "off"      # bottom-centre brand tag OFF by default (YTM_TAG=LML brings the text strip back)
     font = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-    cx, cy = (os.environ.get("YTM_TAG_POS", "646:588").split(":") + ["588"])[:2]
-    bw, bh = (os.environ.get("YTM_TAG_BOX", "250:64").split(":") + ["64"])[:2]
+    cx, cy = (os.environ.get("YTM_TAG_POS", "641:595").split(":") + ["588"])[:2]
+    bw, bh = (os.environ.get("YTM_TAG_BOX", "356:52").split(":") + ["64"])[:2]
     tagimg = os.environ.get("YTM_TAG_IMG", "off").strip()                # bottom-centre tag image OFF by default (YTM_TAG_IMG=lml_tag.png brings it back)
     use_img = bool(strip and tagimg and tagimg.lower() != "off" and os.path.isfile(tagimg)
                    and all(re.fullmatch(r"\d{1,4}", v) for v in (cx, cy, bw, bh)))
     if use_img:                                                   # branded tag PNG (opaque, hides the source watermark)
         chain += "[b0];[2:v]scale=%s:%s,format=rgba[tg];[b0][tg]overlay=%d:%d" % (bw, bh, int(cx) - int(bw) // 2, int(cy) - int(bh) // 2)
+    elif tag and tag.lower() != "off" and not os.path.isfile(font) and re.fullmatch(r"\d{1,4}", cx) and re.fullmatch(r"\d{1,4}", cy) \
+            and re.fullmatch(r"\d{1,4}", bw) and re.fullmatch(r"\d{1,4}", bh):
+        chain += ",drawbox=x=%s-%s/2:y=%s-%s/2:w=%s:h=%s:color=0x0b3d91:t=fill" % (cx, bw, cy, bh, bw, bh)   # no font on the runner: solid strip only
     elif tag and tag.lower() != "off" and os.path.isfile(font) and re.fullmatch(r"[A-Za-z0-9 @._-]{1,24}", tag) \
             and all(re.fullmatch(r"\d{1,4}", v) for v in (cx, cy, bw, bh)):
         chain += (",drawbox=x=%s-%s/2:y=%s-%s/2:w=%s:h=%s:color=0x0b3d91:t=fill"
