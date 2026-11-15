@@ -87,21 +87,24 @@ def _fit(parts, limit=100, sep=" | "):
 
 
 def live_title(src, channel=""):
+    """Phone shows ~60 chars: so '🔴 teams | stage' comes first; tournament, prize, brand follow and are cut from the end."""
     p = parse_match(src, channel)
+    pr = facts_for(src).get("prize")
     head = "Live \U0001F534\U0001F3C6"
-    if p["stage"]:
-        head += " (%s)" % p["stage"]
     teams = "%s vs %s" % (p["a"], p["b"]) if p["a"] and p["b"] else ""
     if not (teams or p["tour"]):
         return "%s %s Match | %s" % (head, p["sport"], BRAND)
-    first = (head + " " + p["tour"].upper()).strip() if p["tour"] else head
-    pr = facts_for(src).get("prize")
-    pz = ("\U0001F4B0 Prize %s" % pr) if pr else ""
-    for parts in ([first, teams, pz, BRAND], [first, teams, pz], [first, teams, BRAND]):   # prize beats brand when space is tight
-        t = " | ".join(x for x in parts if x)
-        if len(t) <= 100:
-            return t
-    return _fit([first, teams, BRAND])
+    first = ("%s %s" % (head, teams)) if teams else ("%s %s" % (head, p["tour"].upper()))
+    parts = [first, p["stage"], p["tour"].upper() if teams else "", ("\U0001F4B0 Prize %s" % pr) if pr else "", BRAND]
+    parts = [x for x in parts if x]
+    while len(" | ".join(parts)) > 100 and len(parts) > 1:
+        # drop brand first, then tournament, then prize... never the teams/stage
+        drop = next((i for i in (len(parts) - 1, len(parts) - 2) if i > 1), None)
+        if drop is None:
+            break
+        parts.pop(drop)
+    t = " | ".join(parts)
+    return t if len(t) <= 100 else t[:100].rsplit(" ", 1)[0]
 
 
 _HL = [
@@ -277,8 +280,8 @@ def make_banner(frame, src, out, channel="", logo=None):
             base = base.resize((int(base.width * sc) + 1, int(base.height * sc) + 1), Image.LANCZOS)
             l, t = (base.width - W) // 2, (base.height - H) // 2
             base = base.crop((l, t, l + W, t + H))
-            base = ImageEnhance.Contrast(ImageEnhance.Color(base).enhance(1.25)).enhance(1.1)
-            base = base.filter(ImageFilter.GaussianBlur(2.2))
+            base = ImageEnhance.Brightness(ImageEnhance.Contrast(ImageEnhance.Color(base).enhance(1.55)).enhance(1.18)).enhance(1.08)
+            base = base.filter(ImageFilter.GaussianBlur(0.8))
         except Exception:
             base = None
     if base is None:
@@ -288,8 +291,8 @@ def make_banner(frame, src, out, channel="", logo=None):
     grad = Image.new("RGBA", (W, H))
     gd = ImageDraw.Draw(grad)
     for y in range(H):
-        a = int(215 * (1 - y / H) ** 1.4 * 0.55 + 70 + 110 * (y / H) ** 2.2)
-        gd.line([(0, y), (W, y)], fill=(6, 10, 28, min(235, a)))
+        a = int(120 * (1 - y / H) ** 1.7 + 10 + 150 * (y / H) ** 2.6)
+        gd.line([(0, y), (W, y)], fill=(6, 10, 28, min(225, a)))
     img.alpha_composite(grad)
     d = ImageDraw.Draw(img)
 
@@ -314,7 +317,7 @@ def make_banner(frame, src, out, channel="", logo=None):
         y += 92
 
     # teams: two slanted ribbons with a VS badge in the middle
-    ty0, ty1 = 466, 566
+    ty0, ty1 = 452, 566
     if p["a"] and p["b"]:
         for side, name, (ca, cb) in ((0, p["a"], (c1a, c1b)), (1, p["b"], (c2a, c2b))):
             x0, x1 = (36, 640) if side == 0 else (640, W - 36)
@@ -325,7 +328,7 @@ def make_banner(frame, src, out, channel="", logo=None):
             d = ImageDraw.Draw(img)
             _slant_box(d, x0, ty0, x1, ty1, ca, 40)
             _slant_box(d, x0, ty1 - 20, x1 - 6, ty1, cb, 40)
-            nf = _fit_font(d, name.upper(), (x1 - x0) - 210, 66, 28)
+            nf = _fit_font(d, name.upper(), (x1 - x0) - 200, 80, 28)
             _shadow_text(img, ((x0 + x1) // 2 + (-34 if side == 0 else 34), (ty0 + ty1) // 2 - 6), name.upper(), nf, (255, 255, 255), anchor="mm", stroke=3, shadow=3)
             d = ImageDraw.Draw(img)
         d = ImageDraw.Draw(img)
