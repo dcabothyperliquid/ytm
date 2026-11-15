@@ -627,8 +627,7 @@ def upload_approved():
                 yc = it.get("yt_caption") or {}
                 title = (yc.get("title") or _hl_title(m))[:100]
                 ch = it.get("chapters") or []
-                desc = yc.get("description") or ("Match highlights.\n\n" + "\n".join("%s %s" % (_fmt_ts(t), ev) for t, ev in ch)
-                                                 + "\n\nFull match: https://www.youtube.com/watch?v=%s" % m["vid"])
+                desc = yc.get("description") or ("Match highlights.\n\nFull match: https://www.youtube.com/watch?v=%s" % m["vid"])
                 tags = ["highlights", "live", "match"]
             else:
                 title = it["title"] if "#shorts" in it["title"].lower() else (it["title"][:92] + " #Shorts")

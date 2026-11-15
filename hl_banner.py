@@ -83,9 +83,9 @@ def captions(title, vid, segs, chapters, info=None):
     yt_t = ytm_style.highlight_title(title, seed=vid)
     ch = "\n".join("%s %s" % ("%d:%02d" % (t // 60, t % 60), ev.title()) for t, ev in chapters if ev not in ("dot",))
     yt_d = ("\U0001F525 %s ke full highlights - %s!\n%s\n\nToss se lekar aakhri ball tak ka pura thriller - sab kuch ek video me.\n"
-            "Pura match miss kiya? Ab yahin dekho.\n\n⏱ Chapters:\n%s\n\n\U0001F3AC Full match: https://www.youtube.com/watch?v=%s\n"
+            "Pura match miss kiya? Ab yahin dekho.\n\n\U0001F3AC Full match: https://www.youtube.com/watch?v=%s\n"
             "\U0001F514 Subscribe karo aur aise hi local cricket ke highlights na miss karo.\n\n#cricket #highlights #localcricket #LML %s") % (
-        teams, stats or "full match", tour, ch, vid, "#" + p["tour"].replace(" ", "") if p["tour"] else "")
+        teams, stats or "full match", tour, vid, "#" + p["tour"].replace(" ", "") if p["tour"] else "")
     fb = ("\U0001F525 %s\n\n\U0001F4A5 %s\n\nJisne ye match nahi dekha wo sach me kuch bada miss kar gaya \U0001F62E\n"
           "Poora highlight dekho aur batao - sabse bada shot kaunsa tha? \U0001F447\n\nFull match: https://www.youtube.com/watch?v=%s\n\n"
           "#cricket #highlights #localcricket #LML") % (teams.upper(), stats.upper() or "FULL HIGHLIGHTS", vid)
