@@ -868,7 +868,7 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False):
             chain += ",removelogo=filename=%s" % mk                # tight circle mask on the top-right round logo
         # centre-bottom watermark: overwritten with real grass copied from just below it (feathered edges, no blur).
         # YTM_CLEAN="x:y:w:h:srcy;..." (1280x720 frame), =off disables.
-        cl = os.environ.get("YTM_CLEAN", "470:576:340:40:628").strip()
+        cl = os.environ.get("YTM_CLEAN", "off").strip()
         for i, bx in enumerate([] if cl.lower() == "off" else cl.split(";")):
             if re.fullmatch(r"\d{1,4}:\d{1,4}:\d{1,4}:\d{1,4}:\d{1,4}", bx.strip()):
                 cx_, cy_, cw_, ch_, sy_ = bx.strip().split(":")
@@ -897,10 +897,10 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False):
                 chain += ",drawbox=x=%s:y=%s:w=%s:h=%s:color=black:t=fill" % tuple(bx.strip().split(":"))
     # centre-bottom "ACL" mark (permission-holder OK'd removal): covered by a solid branded strip with our tag (no blur smear).
     # YTM_TAG="" / "off" -> strip off and the mark is delogo-smeared instead. YTM_TAG_POS="cx:cy", YTM_TAG_BOX="w:h" (1280x720 frame).
-    tag = os.environ.get("YTM_TAG", "off").strip() if strip else "off"      # bottom-centre brand tag OFF by default (YTM_TAG=LML brings the text strip back)
+    tag = os.environ.get("YTM_TAG", "LML SPORTS" if permitted else "off").strip() if strip else "off"      # bottom-centre brand tag OFF by default (YTM_TAG=LML brings the text strip back)
     font = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-    cx, cy = (os.environ.get("YTM_TAG_POS", "646:588").split(":") + ["588"])[:2]
-    bw, bh = (os.environ.get("YTM_TAG_BOX", "250:64").split(":") + ["64"])[:2]
+    cx, cy = (os.environ.get("YTM_TAG_POS", ("636:596" if permitted else "646:588")).split(":") + ["588"])[:2]
+    bw, bh = (os.environ.get("YTM_TAG_BOX", ("330:38" if permitted else "250:64")).split(":") + ["64"])[:2]
     tagimg = os.environ.get("YTM_TAG_IMG", "off").strip()                # bottom-centre tag image OFF by default (YTM_TAG_IMG=lml_tag.png brings it back)
     use_img = bool(strip and tagimg and tagimg.lower() != "off" and os.path.isfile(tagimg)
                    and all(re.fullmatch(r"\d{1,4}", v) for v in (cx, cy, bw, bh)))
