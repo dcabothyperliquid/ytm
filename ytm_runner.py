@@ -912,7 +912,7 @@ def wm_probe(hls):
             bw, bh = (max(xs) - min(xs) + 1) * CELL, (max(ys) - min(ys) + 1) * CELL
             cx = X0 + (min(xs) + max(xs) + 1) * CELL / 2.0
             cy = Y0 + (min(ys) + max(ys) + 1) * CELL / 2.0
-            if min(xs) == 0 or max(xs) == gw - 1 or max(ys) == gh - 1 or bw > 520 or bw < 56 or bh > 72 or bh < 12:
+            if min(xs) == 0 or max(xs) == gw - 1 or max(ys) == gh - 1 or bw > 520 or bw < 56 or bh > 56 or bh < 12 or bw < 2.2 * bh:
                 continue                                 # touches the strip border / absurd size = background or scoreboard
             if abs(cx - 640) > float(os.environ.get("YTM_WM_CENTER_TOL", "110")) or not (556 <= cy <= 628):
                 continue                                 # not a centred watermark
