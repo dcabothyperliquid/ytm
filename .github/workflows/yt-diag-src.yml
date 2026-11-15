@@ -1,0 +1,49 @@
+name: YT Diag Source Frames (manual)
+
+# Grabs a few RAW frames from one live/VOD source (default: the Ten 10 relay source) so the logo/watermark mask can be measured.
+# Result: branch ytm-src (jpg files only, never cookies).
+on:
+  workflow_dispatch:
+    inputs:
+      video:
+        description: "Video ID"
+        required: false
+        default: "tkFXziDr8Pw"
+
+permissions:
+  contents: write
+
+jobs:
+  frames:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          pip install -q -U "yt-dlp[default]"
+          for i in 1 2 3; do timeout 240 sudo apt-get update -qq && timeout 300 sudo apt-get install -y -qq ffmpeg && break; sleep 5; done
+      - name: Grab frames
+        env:
+          YT_COOKIES: ${{ secrets.YT_COOKIES }}
+          VID: ${{ github.event.inputs.video }}
+        run: |
+          mkdir -p out
+          python hl_runner.py cookies || true
+          CK=""; [ -f cookies.txt ] && CK="--cookies cookies.txt"
+          URL=$(yt-dlp --no-warnings --js-runtimes node --remote-components ejs:github $CK -g -f "best[height<=720]/b" "https://www.youtube.com/watch?v=$VID" | head -1)
+          echo "got url: ${URL:0:40}..."
+          ffmpeg -y -loglevel error -i "$URL" -vf "fps=1/3,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2" -frames:v 5 -q:v 2 out/src_%02d.png || true
+          ls -la out
+      - name: Publish (ONLY images, never cookies)
+        run: |
+          rm -f cookies.txt
+          mkdir -p /tmp/o && cp out/*.png /tmp/o/ 2>/dev/null || true
+          git config user.name ytm-src; git config user.email src@users.noreply.github.com
+          git checkout --orphan ytm-src && git rm -rf . -q
+          git clean -fdxq
+          cp /tmp/o/* . && git add -A
+          git commit -qm "src frames" && git push -f origin ytm-src
