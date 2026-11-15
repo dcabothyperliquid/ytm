@@ -928,6 +928,10 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False):
                           % (px, py, pw, ph, font, max(9, min(int(ph) - 10, int(pw) // 4)), px, pw, py, ph))
     wm = None
     badge = None
+    try:                                                          # subtle badge: 0.0 (invisible) .. 1.0 (solid); default 0.30 = noticed only on a close look
+        wm_alpha = "%.2f" % max(0.0, min(1.0, float(os.environ.get("YTM_WM_ALPHA", "0.30"))))
+    except ValueError:
+        wm_alpha = "0.30"
     if strip and os.environ.get("YTM_WM", "on").strip().lower() != "off":
         # OUR LML SPORTS badge, centre-bottom, on every relay (own branding; no source mark is removed, only covered by the pill).
         # centre-bottom spot (x471-801,y577-615) carries OUR logo + text. YTM_WM=off hides it.
@@ -955,8 +959,8 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False):
                       ",split=2[v][s];[s]fps=1/20,scale=640:-1[snap]" % (lw, wm[0], pos, wm[1], wm[2]))
     elif badge:                                                   # logo top-right, then the badge over the centre-bottom source mark
         bidx = 2 + (1 if use_img else 0)
-        fc = chain + ("[bg];[1:v]scale=%s:-1[lg];[bg][lg]overlay=%s[o1];[%d:v]scale=%d:%d:flags=lanczos,format=rgba[bdg];[o1][bdg]overlay=%d:%d"
-                      ",split=2[v][s];[s]fps=1/20,scale=640:-1[snap]" % (lw, pos, bidx, badge[3], badge[4], badge[1], badge[2]))
+        fc = chain + ("[bg];[1:v]scale=%s:-1[lg];[bg][lg]overlay=%s[o1];[%d:v]scale=%d:%d:flags=lanczos,format=rgba,colorchannelmixer=aa=%s[bdg];[o1][bdg]overlay=%d:%d"
+                      ",split=2[v][s];[s]fps=1/20,scale=640:-1[snap]" % (lw, pos, bidx, badge[3], badge[4], wm_alpha, badge[1], badge[2]))
     else:
         fc = chain + "[bg];[1:v]scale=%s:-1[lg];[bg][lg]overlay=%s,split=2[v][s];[s]fps=1/20,scale=640:-1[snap]" % (lw, pos)
     return (base + ["-i", logo] + (["-i", tagimg] if use_img else []) + (["-i", badge[0]] if badge else []) + ["-filter_complex", fc, "-map", "[v]", "-map", "0:a?",
