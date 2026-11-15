@@ -38,6 +38,7 @@ TOSS_PENDING_MAX = 360  # if "TOSS PENDING" sits longer than this before "won th
 TOSS_RX = re.compile(r"\bT[O0]SS\b", re.I)
 TOSSDONE_RX = re.compile(r"WON\s+THE\s+T[O0]SS|(?:OPTED|ELECTED|CHOSE|CHOOSE)\s+TO\s+(?:BAT|BOWL|FIELD)", re.I)
 RESULT_RX = re.compile(r"\bWON\s+BY\b|MATCH\s+(?:TIED|DRAWN)|\bNO\s+RESULT\b|\bABANDONED\b|\bSUPER\s+OVER\b", re.I)
+CHASE2_RX = re.compile(r"\bNEED\s+\d+|TARGET\s*[-:]?\s*\d+|\bRRR\b", re.I)   # 2nd innings only (CRR is shown in the 1st innings too)
 CHASE_RX = re.compile(r"\bNEED\s+\d+|TARGET\s*[-:]?\s*\d+|\bRRR\b|\bCRR\b", re.I)
 OVERS_RX = re.compile(r"\b\d{1,2}\.\d\s*\(\s*\d{1,2}\s*\)")
 OVERS_PAIR = re.compile(r"\b(\d{1,2})\.([0-6])\s*\(\s*(\d{1,2})\s*\)")
@@ -104,6 +105,85 @@ NEW_MATCH_MIN_GAP = 35 * 60      # a new match starts at least this long after t
 NEW_MATCH_PLAY = 100             # ... and has this many live-scoreboard frames (15 s each, ~25 min) in the 40 min after its toss
 
 
+
+# ---------------------------------------------------------------- over-counter logic (toss text is unreliable, the counter is not)
+def _readings(rows, a, b):
+    """[(t, balls_bowled, match_overs)] from the over counter "4.1 (8)" in rows a <= t < b (only the most common match-overs value)."""
+    out = []
+    for t, f, txt in rows:
+        if not (a <= t < b):
+            continue
+        hit = None
+        for m in OVERS_PAIR.finditer((txt or "").upper()):
+            ov, ball, mx = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if 1 <= mx <= 50 and ov <= mx:
+                hit = (t, ov * 6 + ball, mx)
+        if hit:
+            out.append(hit)
+    if not out:
+        return out
+    mx0 = Counter(r[2] for r in out).most_common(1)[0][0]
+    return [r for r in out if r[2] == mx0]
+
+
+def _smooth(reads, k=5):
+    """median filter over neighbouring readings: one misread digit must not look like a reset."""
+    if len(reads) < k:
+        return list(reads)
+    h = k // 2
+    out = []
+    for i, (t, _, mx) in enumerate(reads):
+        w = sorted(r[1] for r in reads[max(0, i - h):i + h + 1])
+        out.append((t, w[len(w) // 2], mx))
+    return out
+
+
+def _innings_runs(reads):
+    """split the counter readings into runs of rising overs (= innings); a drop of more than 2 overs starts a new run. Runs < 4 readings = noise."""
+    runs = []
+    for r in _smooth(reads):
+        if runs and r[1] >= runs[-1][-1][1] - 12:
+            runs[-1].append(r)
+        else:
+            runs.append([r])
+    return [x for x in runs if len(x) >= 4]
+
+
+def _counter_reset(rows, t0, t1):
+    """Does a NEW MATCH start around the toss block t0..t1?  A new match = the over counter falls back to ~0 after a 2nd innings
+    (chase banners just before). True / False; None = counter unreadable around here (caller falls back to the old heuristics).
+    Why: a 'TOSS' ticker in the middle of the chase made the scout cut the final in two."""
+    reads = _smooth(_readings(rows, t0 - 1200.0, t1 + 2400.0))
+    if sum(1 for r in reads if r[0] < t0) < 3 or sum(1 for r in reads if r[0] > t1) < 3:
+        return None
+    for a, b in zip(reads, reads[1:]):
+        if b[1] <= 6 and a[1] - b[1] >= 12 and any(CHASE2_RX.search(x or "") for t, f, x in rows if b[0] - 1200.0 <= t < b[0]):
+            return True
+    return False
+
+
+def _first_ball(rows, floor, t_res):
+    """First ball of the match that ends with the result banner at t_res, from the over counter alone.
+    -> (start_estimate_s, first_reading_t, first_reading_balls) or None.
+    1st innings = the counter run before the chase run; its first reading minus (balls bowled so far x seconds-per-ball) = first ball."""
+    runs = _innings_runs(_readings(rows, floor, t_res + 1.0))
+    if len(runs) < 2:
+        return None
+    last, prev = runs[-1], runs[-2]
+    if t_res - last[-1][0] > 900.0 or last[0][0] - prev[-1][0] > 45 * 60.0:
+        return None                                         # the chase does not reach the result / far too long a break
+    if any(f["result"] for t, f, _ in rows if prev[0][0] < t < t_res):
+        return None                                         # a result banner in between -> prev run is an older match
+    if sum(1 for t, f, x in rows if prev[0][0] <= t <= prev[-1][0] and CHASE2_RX.search(x or "")) >= 3:
+        return None                                         # prev run has target/need banners -> it was a 2nd innings
+    t1, b1 = prev[0][0], prev[0][1]
+    span_b = prev[-1][1] - b1
+    rate = (prev[-1][0] - t1) / span_b if span_b >= 12 else 40.0
+    rate = min(max(rate, 8.0), 90.0)
+    est = max(t1 - b1 * rate, t1 - 40 * 60.0, floor)
+    return est, t1, b1
+
+
 def _play_run_start(rows, t_ref, floor=0.0, gap=BACK_GAP, max_back=BACK_MAX):
     """Earliest t of the unbroken run of live-scoreboard ("play") frames that ends at t_ref (walk backwards).
     Stops at a hole bigger than `gap`, at a result banner, at `floor` or at `max_back`. None = no play frames right before t_ref.
@@ -160,9 +240,12 @@ def segment(rows, dur, title="", last=False, debug=None):
         if n_play < MIN_PLAY_FRAMES:
             continue
         # a "toss" ticker in the middle of a match is not a new match: a real new match needs a result banner after the previous start
-        if valid and not any(f["result"] for t, f, _ in rows if valid[-1][1] < t < b[0]) \
-                and not ident_changed(rows, valid[-1][0], b[0], b[1]) and not _long_new_match(rows, valid[-1], b):
-            continue
+        if valid and not any(f["result"] for t, f, _ in rows if valid[-1][1] < t < b[0]):
+            cr = _counter_reset(rows, b[0], b[1])
+            if cr is False:                               # over counter keeps rising through this "toss" text -> same match (ticker), whatever the OCR of team names says
+                continue
+            if cr is None and not ident_changed(rows, valid[-1][0], b[0], b[1]) and not _long_new_match(rows, valid[-1], b):
+                continue
         valid.append(b)
 
     out = []
@@ -291,6 +374,10 @@ def _one_match(rows, t_first, t_last, t_done, limit, dur, toss_seen, title="", f
         mid = start + (t_res - start) * 0.5
         m["chase_frames"] = sum(1 for r in span if r[0] >= mid and r[0] <= t_res and r[1]["chase"])
         m["last_over"], m["overs_at_end"] = _last_over_finish(rows, t_res, res[0][2])
+        cb = _first_ball(rows, floor, t_res)
+        if cb:
+            m["start"] = round(max(0.0, cb[0] - LEAD_IN), 1)
+            m["start_note"] = "pehli ball over counter se: pehla reading %s (%.1f over), start %s" % (fmt(cb[1]), cb[2] // 6 + (cb[2] % 6) / 10.0, fmt(m["start"]))
     elif limit < dur and play_n >= MIN_PLAY_FRAMES and any(r[1]["chase"] for r in span):
         # no "WON BY" banner was read, but another match starts right after and this one had a chase (2nd innings):
         # it ended where its last live-scoreboard frame is
@@ -384,6 +471,10 @@ def scan(H, vid, title="", dur_hint=None, last=False):
     H.log("scoreboard: %d/%d strips had scoreboard text" % (hits, len(rows)))
     if hits < 5:
         return None
+    for t, f, txt in rows:
+        if txt:
+            H.log("OCR %s %s%s%s%s%s %s" % (fmt(t), "T" if f["toss"] else "-", "D" if f["tossdone"] else "-", "R" if f["result"] else "-",
+                                           "C" if f["chase"] else "-", "P" if f["play"] else "-", txt[:90]))
     dbg = []
     ms = segment(rows, dur or rows[-1][0] + STEP, title, last=last, debug=dbg)
     for d in dbg:

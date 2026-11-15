@@ -287,7 +287,9 @@ def _entry_from_board(H, vid, title, bm, want=None):
     if best["chase_frames"]:
         ev.append("2nd innings ke signs (target/need) mile")
     if best.get("final"):
-        ev.append("FINAL: result ke baad cup lift tak (+10 min)")
+        ev.append("FINAL: result ke baad ~1 min tak")
+    if best.get("start_note"):
+        ev.append(best["start_note"])
     ev += [d[:200] for d in (bm.get("debug") or [])]
     if no_thrill:
         reason = "Koi match last over me khatam nahi hua (%s) - highlight nahi banega" % ", ".join(m.get("overs_at_end") or "?" for m in known_no)
