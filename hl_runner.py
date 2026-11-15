@@ -732,6 +732,18 @@ def process(src, outdir, meta, offset=0.0):
         if m["text"]:
             L.append("  heard: %s" % m["text"][:140])
     L += ["", "Note: shorts = story-based (over compilation / hat-trick / catch drop / last over); needs keywords in commentary. Always check before upload."]
+    bn = {}
+    try:
+        import hl_banner
+        bn = hl_banner.make(src, meta.get("title", ""), meta.get("vid", ""), segs, [[round(ct), ev] for ct, ev, at in chapters], outdir,
+                            info=(plan or {}).get("info"))
+        L += ["", "== BANNER / THUMBNAIL ==", "banner.jpg (faces: %s%s)" % (bn.get("faces", 0), (" err " + bn["error"]) if bn.get("error") else "")]
+        if bn.get("yt_caption"):
+            L += ["", "== YOUTUBE CAPTION ==", bn["yt_caption"]["title"], "", bn["yt_caption"]["description"]]
+        if bn.get("fb_caption"):
+            L += ["", "== FACEBOOK CAPTION ==", bn["fb_caption"]]
+    except Exception as ex:                       # noqa
+        log("banner failed:", ex)
     open(os.path.join(outdir, "report.txt"), "w").write("\n".join(L) + "\n")
     json.dump([dict(m, start=m["start"] + offset, end=m["end"] + offset) for m in ranked],
               open(os.path.join(outdir, "moments.json"), "w"), ensure_ascii=False, indent=1)
@@ -756,7 +768,8 @@ def process(src, outdir, meta, offset=0.0):
                            "start": round(s_ + offset, 1), "end": round(e_ + offset, 1), "heard": m["text"][:140],
                            "label": lab, "title": _short_t(m, lab, tg, name)})
     return {"dur": dur, "ranked": ranked, "finish": finish,
-            "highlight": {"file": "highlights.mp4", "dur": round(total), "chapters": [[round(ct), ev] for ct, ev, at in chapters]},
+            "highlight": {"file": "highlights.mp4", "dur": round(total), "chapters": [[round(ct), ev] for ct, ev, at in chapters],
+                          "banner": bn.get("banner"), "yt_caption": bn.get("yt_caption"), "fb_caption": bn.get("fb_caption")},
             "shorts": out_shorts}
 
 
@@ -924,7 +937,7 @@ def run_vid(vid, target_min=None, window=None):
     for r in gh_releases():
         if r["tag_name"] == tag:
             sh(["gh", "api", "-X", "DELETE", "repos/%s/releases/%s" % (repo(), r["id"])], check=False)
-    files = sorted(glob.glob(os.path.join(out, "*.mp4"))) + [os.path.join(out, "report.txt"), os.path.join(out, "moments.json")]
+    files = sorted(glob.glob(os.path.join(out, "*.mp4"))) + sorted(glob.glob(os.path.join(out, "banner.jpg"))) + [os.path.join(out, "report.txt"), os.path.join(out, "moments.json")]
     sh(["gh", "release", "create", tag, "-R", repo(), "--draft", "--target", "main",
         "--title", "Highlights %s" % clean_title(info), "--notes-file", os.path.join(out, "report.txt")] + files)
     note("draft release created: %s (%d files)" % (tag, len(files)))

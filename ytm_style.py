@@ -129,7 +129,31 @@ def live_desc(src, channel=""):
     head = " - ".join(x for x in (p["tour"], p["stage"]) if x) or "Live %s" % p["sport"]
     tag = "".join(re.sub(r"[^0-9A-Za-z]", "", w).capitalize() for w in (p["tour"] or "").split()[:3])
     L = ["\U0001F534 LIVE NOW: " + head]
-    pr = facts_for(src).get("prize")
+    if faces:                                                # players of this match (face crops) on the sides, above the team ribbons
+        try:
+            n = len(faces)
+            cs = 170
+            pos = [(40, 196), (W - 40 - cs, 196), (W // 2 - cs // 2, 196)][:n]
+            if n == 3:
+                pos = [(40, 196), (W - 40 - cs, 196), (200, 196)]
+            for fc, (px, py) in zip(faces, pos):
+                im = Image.fromarray(fc[..., ::-1]).convert("RGB").resize((cs, cs), Image.LANCZOS)
+                ring = Image.new("RGBA", (cs + 16, cs + 16), (0, 0, 0, 0))
+                ImageDraw.Draw(ring).ellipse([0, 0, cs + 15, cs + 15], fill=(255, 214, 10, 255))
+                img.alpha_composite(ring, (px - 8, py - 8))
+                mk = Image.new("L", (cs, cs), 0)
+                ImageDraw.Draw(mk).ellipse([0, 0, cs - 1, cs - 1], fill=255)
+                img.paste(im, (px, py), mk)
+            d = ImageDraw.Draw(img)
+        except Exception:
+            pass
+    if pill:
+        pf = _fit_font(d, pill, W - 300, 50, 30)
+        tw = d.textlength(pill, font=pf)
+        bx0, bx1, by0, by1 = W // 2 - tw / 2 - 50, W // 2 + tw / 2 + 50, 372, 444
+        _slant_box(d, bx0, by0, bx1, by1, (220, 38, 38, 255), 24)
+        d.text((W // 2, (by0 + by1) // 2 + 2), pill, font=pf, fill=(255, 255, 255), anchor="mm")
+    pr = None if pill else facts_for(src).get("prize")
     if pr:
         L.append("\U0001F4B0 Winner prize: %s" % pr)
     if p["a"] and p["b"]:
@@ -268,7 +292,7 @@ def _slant_box(draw, x0, y0, x1, y1, col, skew=34):
     draw.polygon([(x0 + skew, y0), (x1, y0), (x1 - skew, y1), (x0, y1)], fill=col)
 
 
-def make_banner(frame, src, out, channel="", logo=None, badge="LIVE", strip="LIVE ON:"):
+def make_banner(frame, src, out, channel="", logo=None, badge="LIVE", strip="LIVE ON:", pill=None, faces=None):
     """frame = path of a stream snapshot (or None -> plain dark gradient). Returns out path."""
     from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
     p = parse_match(src, channel)
@@ -343,7 +367,31 @@ def make_banner(frame, src, out, channel="", logo=None, badge="LIVE", strip="LIV
         _shadow_text(img, (W // 2, (ty0 + ty1) // 2), "LIVE MATCH", mf, (255, 255, 255), anchor="mm", stroke=4)
         d = ImageDraw.Draw(img)
 
-    pr = facts_for(src).get("prize")
+    if faces:                                                # players of this match (face crops) on the sides, above the team ribbons
+        try:
+            n = len(faces)
+            cs = 170
+            pos = [(40, 196), (W - 40 - cs, 196), (W // 2 - cs // 2, 196)][:n]
+            if n == 3:
+                pos = [(40, 196), (W - 40 - cs, 196), (200, 196)]
+            for fc, (px, py) in zip(faces, pos):
+                im = Image.fromarray(fc[..., ::-1]).convert("RGB").resize((cs, cs), Image.LANCZOS)
+                ring = Image.new("RGBA", (cs + 16, cs + 16), (0, 0, 0, 0))
+                ImageDraw.Draw(ring).ellipse([0, 0, cs + 15, cs + 15], fill=(255, 214, 10, 255))
+                img.alpha_composite(ring, (px - 8, py - 8))
+                mk = Image.new("L", (cs, cs), 0)
+                ImageDraw.Draw(mk).ellipse([0, 0, cs - 1, cs - 1], fill=255)
+                img.paste(im, (px, py), mk)
+            d = ImageDraw.Draw(img)
+        except Exception:
+            pass
+    if pill:
+        pf = _fit_font(d, pill, W - 300, 50, 30)
+        tw = d.textlength(pill, font=pf)
+        bx0, bx1, by0, by1 = W // 2 - tw / 2 - 50, W // 2 + tw / 2 + 50, 372, 444
+        _slant_box(d, bx0, by0, bx1, by1, (220, 38, 38, 255), 24)
+        d.text((W // 2, (by0 + by1) // 2 + 2), pill, font=pf, fill=(255, 255, 255), anchor="mm")
+    pr = None if pill else facts_for(src).get("prize")
     if pr:
         pf = _font(46)
         txt = "WINNER PRIZE  %s" % pr
