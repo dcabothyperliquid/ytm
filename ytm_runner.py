@@ -984,7 +984,7 @@ class Relay:
             strip = True if r is None else r
             self.st["mark_probe"] = {"watermark": r, "strip": strip, "at": int(time.time())}
         spec = None
-        if os.environ.get("YTM_LOGO_AUTO", "off").lower() != "off":
+        if os.environ.get("YTM_LOGO_AUTO", "on").lower() != "off":
             vid = (self.st.get("relay") or {}).get("video_id") or getattr(self, "_cur_vid", None)
             lp = self.st.get("logo_probe") or {}
             if vid and lp.get("video_id") == vid and lp.get("ver") == LOGO_PROBE_VER and "spec" in lp \
