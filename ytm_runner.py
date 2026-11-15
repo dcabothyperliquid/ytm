@@ -693,7 +693,7 @@ def mark_present(hls):
         return None
 
 
-LOGO_PROBE_VER = 4          # bump when sizing logic changes: cached per-match specs from older logic are re-probed
+LOGO_PROBE_VER = 5          # bump when sizing logic changes: cached per-match specs from older logic are re-probed
 
 
 def logo_probe(hls):
@@ -765,6 +765,8 @@ def logo_probe(hls):
             bw, bh = (max(xs) - min(xs) + 1) * CELL, (max(ys) - min(ys) + 1) * CELL
             if min(xs) == 0 or max(ys) == gh - 1 or bw > 340 or bh > 190 or bw < 32 or bh < 24:
                 continue                                 # touches the region border / absurd size = background, try next level
+            if X0 + (min(xs) + max(xs) + 1) * CELL / 2.0 < float(os.environ.get("YTM_LOGO_MINX", "1010")):
+                continue                                 # blob centre too far left of the corner = static background (stands/banner), not a corner logo
             pick = (best, xs, ys, bw, bh)
             break
         if not pick:
