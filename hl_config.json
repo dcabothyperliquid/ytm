@@ -35,6 +35,13 @@
    "vid": "ItjKKj04ipg",
    "sid": "highlight",
    "id": 1794723263960
+  },
+  {
+   "type": "fix_captions",
+   "vid": "ItjKKj04ipg",
+   "sid": "highlight",
+   "regen": true,
+   "id": 1794723606158
   }
  ],
  "reviews": {
