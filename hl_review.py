@@ -11,6 +11,7 @@ import base64
 import glob
 import json
 import os
+import shutil
 import re
 import subprocess
 import time
@@ -178,6 +179,13 @@ def publish_match(vid, title, outdir, res, tag_full="hl-", window=None):
     hl_prev = os.path.join(prev, "highlights_p.mp4")
     make_preview(os.path.join(outdir, res["highlight"]["file"]), hl_prev, height=360, crf=34)
     files.append(hl_prev)
+    bn_url = None
+    bn_src = os.path.join(outdir, res["highlight"].get("banner") or "banner.jpg")
+    if res["highlight"].get("banner") and os.path.isfile(bn_src):      # banner goes to the public preview release too -> dashboard can show it
+        bn_p = os.path.join(prev, "banner.jpg")
+        shutil.copyfile(bn_src, bn_p)
+        files.append(bn_p)
+        bn_url = preview_url(vid, "banner.jpg")
     for s in res["shorts"]:
         s["preview_name"] = s["id"] + "_p.mp4"
         p = os.path.join(prev, s["preview_name"])
@@ -196,7 +204,7 @@ def publish_match(vid, title, outdir, res, tag_full="hl-", window=None):
              "highlight": {"file": res["highlight"]["file"], "dur": res["highlight"]["dur"],
                            "chapters": res["highlight"]["chapters"],
                            "banner": res["highlight"].get("banner"), "yt_caption": res["highlight"].get("yt_caption"),
-                           "fb_caption": res["highlight"].get("fb_caption"),
+                           "fb_caption": res["highlight"].get("fb_caption"), "banner_url": bn_url,
                            "preview": preview_url(vid, "highlights_p.mp4")},
              "shorts": [{k: s[k] for k in ("id", "file", "event", "score", "start", "end", "title", "heard", "preview_name", "label") if k in s}
                         | {"preview": preview_url(vid, s["preview_name"])} for s in res["shorts"]]}
