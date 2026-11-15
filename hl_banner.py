@@ -1,6 +1,7 @@
 """Highlight banner (= YouTube thumbnail) + separate YouTube / Facebook captions. Best effort: every failure -> None, never breaks a run.
 Players: face crops from the best moments of THIS match (opencv Haar, needs opencv-python-headless; no cv2 -> banner without faces)."""
 import os
+import re
 import subprocess
 
 import ytm_style
@@ -71,24 +72,40 @@ def pill_text(segs, info=None):
     return "MUST WATCH"
 
 
-def captions(title, vid, segs, chapters, info=None):
+_BAD_TOUR = re.compile(r"prize|distribution|ceremony|award|presentation|inaugur|opening", re.I)
+
+
+def fb_text(teams, hook, vid, dur=None):
+    """Facebook post text: 'HIGHLIGHTS' + teams in the first line (FB cuts after ~2 lines -> '...more'), then FOMO + comment bait."""
+    mins = int(round(dur / 60.0)) if dur else 0
+    len_line = ("\U0001F3AC Toss se aakhri ball tak - poora match sirf %d min me!" % mins) if mins else "\U0001F3AC Toss se aakhri ball tak - poora match ek hi video me!"
+    return ("\U0001F525\U0001F3CF HIGHLIGHTS | %s\n\n"
+            "\u26A1 %s \u26A1\n"
+            "%s\n\n"
+            "\U0001F631 Jisne ye match miss kiya, usne sabse bada moment miss kar diya!\n"
+            "\U0001F4A5 Chhakke, wicket, pressure - sab kuch isme hai.\n\n"
+            "\U0001F447 Comment me batao: sabse bada shot kaunsa tha?\n"
+            "\U0001F4FA Full match: https://www.youtube.com/watch?v=%s\n\n"
+            "\U0001F514 Follow karo LML - Localmatchlive: aise highlights sabse pehle yahin.\n\n"
+            "#cricket #highlights #matchhighlights #localcricket #LML #LMLSports") % (teams.upper(), hook.upper(), len_line, vid)
+
+
+def captions(title, vid, segs, chapters, info=None, dur=None):
     """-> (youtube dict(title, description), facebook text)"""
     p = ytm_style.parse_match(title)
+    if p.get("tour") and _BAD_TOUR.search(p["tour"]):       # 'Prize Distribution' is the VOD name, not the tournament
+        p = dict(p, tour="")
     c = (info or {}).get("counts") or _stats(segs)
-    six, wk, fo = c.get("six", 0), c.get("wicket", 0), c.get("four", 0)
     teams = "%s vs %s" % (p["a"], p["b"]) if p["a"] and p["b"] else (p["tour"] or title)
     tour = p["tour"] or ""
     fin = any(s_["event"] == "finish" for s_ in segs)
     stats = ("last ball tak gaya thriller" if (info or {}).get("last_ball") else "last over ka thriller") if fin else ""
     yt_t = ytm_style.highlight_title(title, seed=vid)
-    ch = "\n".join("%s %s" % ("%d:%02d" % (t // 60, t % 60), ev.title()) for t, ev in chapters if ev not in ("dot",))
     yt_d = ("\U0001F525 %s ke full highlights - %s!\n%s\n\nToss se lekar aakhri ball tak ka pura thriller - sab kuch ek video me.\n"
             "Pura match miss kiya? Ab yahin dekho.\n\n\U0001F3AC Full match: https://www.youtube.com/watch?v=%s\n"
             "\U0001F514 Subscribe karo aur aise hi local cricket ke highlights na miss karo.\n\n#cricket #highlights #localcricket #LML %s") % (
         teams, stats or "full match", tour, vid, "#" + p["tour"].replace(" ", "") if p["tour"] else "")
-    fb = ("\U0001F525 %s\n\n\U0001F4A5 %s\n\nJisne ye match nahi dekha wo sach me kuch bada miss kar gaya \U0001F62E\n"
-          "Poora highlight dekho aur batao - sabse bada shot kaunsa tha? \U0001F447\n\nFull match: https://www.youtube.com/watch?v=%s\n\n"
-          "#cricket #highlights #localcricket #LML") % (teams.upper(), stats.upper() or "FULL HIGHLIGHTS", vid)
+    fb = fb_text(teams, stats or "full highlights", vid, dur)
     return {"title": yt_t[:100], "description": yt_d[:4900]}, fb
 
 
@@ -96,7 +113,7 @@ def make(src, title, vid, segs, chapters, outdir, info=None):
     """-> dict(banner=<file name or None>, yt_caption={title,description}, fb_caption=str)"""
     res = {"banner": None, "yt_caption": None, "fb_caption": None}
     try:
-        res["yt_caption"], res["fb_caption"] = captions(title, vid, segs, chapters, info)
+        res["yt_caption"], res["fb_caption"] = captions(title, vid, segs, chapters, info, (info or {}).get("dur"))
     except Exception:
         pass
     try:

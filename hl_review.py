@@ -818,6 +818,23 @@ def do_fix_captions(c):
         raise RuntimeError("item nahi mila: %s/%s" % (vid, sid))
     yc = it.get("yt_caption") or {}
     res = {}
+    if c.get("regen") and sid == "highlight" and it.get("fb_caption"):          # rebuild the FB text in the current hl_banner.fb_text style from the saved one
+        import re as _re
+        import hl_banner
+        ls = [_re.sub(r"^[^A-Za-z0-9]+|[^A-Za-z0-9]+$", "", x) for x in it["fb_caption"].split("\n") if x.strip()]
+        teams = _re.sub(r"^HIGHLIGHTS\s*\|\s*", "", ls[0], flags=_re.I)
+        hook = ls[1] if len(ls) > 1 and "http" not in ls[1] else "full highlights"
+        new_fb = hl_banner.fb_text(teams, hook, vid, it.get("dur"))
+        res["regen"] = "ok"
+
+        def mut0(st2, new_fb=new_fb):
+            t0 = _item(st2, vid, sid)
+            if t0 is not None:
+                t0["fb_caption"] = new_fb
+        save_state(mut0, "hl caption regen")
+        st, _ = load_state()
+        m = next((x for x in st["matches"] if x["vid"] == vid), m)
+        it = _item(st, vid, sid) or it
     fb = it.get("fb_uploaded") or {}
     page, tok = _fb_creds()
     if fb.get("id") and page and tok:
