@@ -53,7 +53,7 @@ PLAY_RX = re.compile(r"\b(?:four|six|run|runs|over|ball|wicket|single)\b|चौ�
 PAD = {"wicket": (6, 11), "six": (6, 9), "four": (5, 6), "noball": (4, 5), "wide": (3, 4), "dot": (3, 4)}
 # scoreboard mode: events sit at the moment the ball was HIT (see hl_scoreboard.align_events), so the clip is
 # "bowler runs in -> shot -> commentary of that ball" and then it cuts to the next four / six / wicket:
-PAD_SB = {"wicket": (3.5, 6), "six": (3.5, 5), "four": (3.5, 4.5), "noball": (3, 3), "wide": (3, 3), "dot": (3, 2)}   # t = the exact SHOT (video cut-away, refine_shots): run-up 3.5 s before, then flight + landing (six 8.5 s, four 8 s, wicket 9.5 s)
+PAD_SB = {"wicket": (4.5, 4.5), "six": (3.5, 5), "four": (3.5, 4.5), "noball": (7, 2.5), "wide": (7, 2.5), "dot": (3, 2)}   # t = the exact SHOT (video cut-away, refine_shots): run-up 3.5 s before, then flight + landing (six 8.5 s, four 8 s, wicket 9.5 s)
 SIX_REPLAY = 10             # extra seconds after a TOP six (replay usually follows within ~10-25 s)
 TOP_SIXES = 1
 MUST = ("wicket", "six", "noball", "wide")
@@ -233,6 +233,18 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
         c = {"start": max(0.0, e["t"] - pa), "end": min(end_a, e["t_end"] + pb), "event": e["kind"], "db": e["db"],
              "must": e["kind"] in MUST, "t": e["t"], "text": e["text"]}
         clips.append(c)
+    if sb:
+        allb = sorted([e for e in sb["events"] if play_from <= e["t"] < end_a], key=lambda e: e["t"])
+        i1 = [e for e in allb if e["t"] < br_a]
+        extra = []
+        if i1:
+            extra += [("first_ball", i1[0]), ("last_ball", i1[-1])]
+        for nm, e in extra:
+            if not any(c["event"] != "toss" and abs(c.get("t", -99) - e["t"]) < 4 for c in clips):
+                clips.append({"start": max(0.0, e["t"] - 6.0), "end": min(end_a, e["t_end"] + 3.0), "event": nm, "must": True,
+                              "db": 0.0, "t": e["t"], "feat": True})
+        if br_b - br_a > 20:
+            clips.append({"start": br_a + 2.0, "end": br_a + 15.0, "event": "recap", "must": True, "db": 0.0, "t": br_a + 2.0, "feat": True})
     sixes = sorted([c for c in clips if c["event"] == "six"], key=lambda c: c["db"], reverse=True)
     for c in sixes[:TOP_SIXES]:                        # replay only for the biggest few sixes
         c["end"] = min(end_a, c["end"] + SIX_REPLAY)
@@ -400,7 +412,7 @@ def snap_plan(plan, segs, dur):
         for s in segs:                                           # ---- end
             if s["start"] < b - 0.3 and s["end"] > b + 0.3:
                 fwd = s["end"] + SNAP_TAIL
-                if fwd - b <= SNAP_FWD_MAX:
+                if fwd - b <= (4.0 if o.get('event') == 'wicket' else SNAP_FWD_MAX):
                     b = min(dur, fwd)
                 else:
                     prev = [x for x in segs if x["end"] <= b - 0.3 and b - x["end"] <= 6.0 and x["end"] > a + 4.0]
@@ -653,15 +665,18 @@ def refine_shots(src, events, log=None):
 
 
 def refine_toss_start(src, ts):
-    """the toss banner appears while the picture is still the previous match (players walking off): the toss scene starts at the
-    last hard cut within 4-16 s after the banner. -> new start (or ts)"""
-    import subprocess, re
-    cmd = ["ffmpeg", "-loglevel", "info", "-ss", "%.2f" % ts, "-t", "20", "-i", src, "-an", "-sn",
-           "-vf", "scale=160:90,select='gt(scene,0.12)',showinfo", "-f", "null", "-"]
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    cuts = [ts + float(x) for x in re.findall(r"pts_time:([0-9.]+)", r.stderr)]
-    cuts = [c for c in cuts if ts + 4.0 <= c <= ts + 16.0]
-    return max(ts, cuts[-1] - 0.3) if cuts else ts
+    """the toss banner appears while the picture is still the previous match (no green wide pitch view there): the toss scene starts
+    at the first time >= ts+3 with the pitch view present for >= 1 s. -> new start (or ts)"""
+    t, fr = _small_frames(src, ts, ts + 24.0)
+    if len(t) < 20:
+        return ts
+    R, G, B = fr[..., 0], fr[..., 1], fr[..., 2]
+    mat = ((G - R) > 45) & ((G - B) > 5) & (G > 110)
+    pit = mat[:, 8:28, :].mean(axis=(1, 2)) > 0.02
+    for i in range(len(t) - SHOT_FPS):
+        if t[i] >= ts + 3.0 and pit[i:i + SHOT_FPS].all():
+            return max(ts, t[i] - 0.5)
+    return ts
 
 
 def build_plan(H, wav, dur, db, target_min, hop=0.5, src=None):
