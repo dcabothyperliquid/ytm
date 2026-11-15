@@ -928,8 +928,9 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False):
                           % (px, py, pw, ph, font, max(9, min(int(ph) - 10, int(pw) // 4)), px, pw, py, ph))
     wm = None
     badge = None
-    if permitted and strip and os.environ.get("YTM_WM", "on").strip().lower() != "off":
-        # centre-bottom source watermark (x483-790,y582-610) is covered by a dark bar carrying OUR logo + text.
+    if strip and os.environ.get("YTM_WM", "on").strip().lower() != "off":
+        # OUR LML SPORTS badge, centre-bottom, on every relay (own branding; no source mark is removed, only covered by the pill).
+        # centre-bottom spot (x471-801,y577-615) carries OUR logo + text. YTM_WM=off hides it.
         # YTM_WM_BOX="x:y:w:h" (1280x720 frame), YTM_WM_TEXT, YTM_WM=off disables.
         bx_ = os.environ.get("YTM_WM_BOX", "471:577:330:38").strip()
         wt = os.environ.get("YTM_WM_TEXT", "LOCAL MATCH LIVE").strip()
