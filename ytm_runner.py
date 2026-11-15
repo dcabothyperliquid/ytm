@@ -887,8 +887,6 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
         chain += (",drawbox=x=%s-%s/2:y=%s-%s/2:w=%s:h=%s:color=0x0b3d91:t=fill"
                   ",drawtext=fontfile=%s:text='%s':fontcolor=white:fontsize=28:x=%s-text_w/2:y=%s-text_h/2:"
                   "shadowcolor=black@0.6:shadowx=2:shadowy=2" % (cx, bw, cy, bh, bw, bh, font, tag, cx, cy))
-    elif strip and boxes.lower() != "off":
-        chain += ",delogo=x=521:y=556:w=250:h=64"
     # other channels' corner marks (permission-holder OK'd removal): small opaque branded patches. Default boxes = the usual
     # bottom-left channel logo, a right-edge watermark just above the scoreboard and the bottom-right corner.
     # YTM_PATCHES="x:y:w:h;x:y:w:h" (1280x720 frame) overrides, YTM_PATCHES=off disables.
