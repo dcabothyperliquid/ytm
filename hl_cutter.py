@@ -55,7 +55,10 @@ PLAY_RX = re.compile(r"\b(?:four|six|run|runs|over|ball|wicket|single)\b|चौ�
 PAD = {"wicket": (6, 11), "six": (6, 9), "four": (5, 6), "noball": (4, 5), "wide": (3, 4), "dot": (3, 4)}
 # scoreboard mode: events sit at the moment the ball was HIT (see hl_scoreboard.align_events), so the clip is
 # "bowler runs in -> shot -> commentary of that ball" and then it cuts to the next four / six / wicket:
-PAD_SB = {"wicket": (4.5, 4.5), "six": (3.5, 5), "four": (3.5, 4.5), "noball": (9, 1.5), "wide": (9, 1.5), "dot": (3, 2)}   # t = the exact SHOT (video cut-away, refine_shots): run-up 3.5 s before, then flight + landing (six 8.5 s, four 8 s, wicket 9.5 s)
+PAD_SB = {"wicket": (9.0, 4.5), "six": (8.5, 5), "four": (8.0, 4.5), "noball": (9, 1.5), "wide": (9, 1.5), "dot": (6, 2)}
+# 2026-11-16: the old pre-roll (3.5 s) assumed the detected "shot" was the real hit. On the NGPL final the clips started with the ball
+# already flying (frames checked second by second), so the run-up was missing. Now ~8 s: hl_verify.py (frame check) trims it back
+# to the real run-up when a vision key is set; without a key the longer pre-roll alone already keeps the run-up in.   # t = the exact SHOT (video cut-away, refine_shots): run-up 3.5 s before, then flight + landing (six 8.5 s, four 8 s, wicket 9.5 s)
 SIX_REPLAY = 10             # extra seconds after a TOP six (replay usually follows within ~10-25 s)
 TOP_SIXES = 1
 MUST = ("wicket", "six", "noball", "wide")
@@ -74,8 +77,8 @@ SB_END_MAX = float(os.environ.get("HL_END_MAX", "40"))   # scoreboard mode: the 
 # LENGTH BUDGET (decided 2026-11-14 by Naem: 6-8 min highlight, "jyada lamba sahi nahi hota"):
 #   wickets / no-balls / toss / finish are NEVER dropped; 3+ consecutive boundaries (hat-trick of six / four) are never dropped;
 #   everything else is trimmed until the ESTIMATED final length (after replay cut + sentence snap) is <= HL_MAX_S.
-MAX_S = float(os.environ.get("HL_MAX_S", "540"))           # estimated final seconds -> real result lands in ~9-10 min (2026-11-15: 6-8 min felt short for a final, 19 min was far too long)
-HARD_S = float(os.environ.get("HL_HARD_S", "570"))         # est. seconds above which streaks are thinned below a hat-trick
+MAX_S = float(os.environ.get("HL_MAX_S", "660"))           # estimated final seconds -> real result lands in ~9-10 min (2026-11-15: 6-8 min felt short for a final, 19 min was far too long)
+HARD_S = float(os.environ.get("HL_HARD_S", "720"))         # est. seconds above which streaks are thinned below a hat-trick
 MAX_CLIPS = int(os.environ.get("HL_MAX_CLIPS", "47"))        # ball clips (wickets + sixes + fours) in the highlight
 FEAT_SIX = int(os.environ.get("HL_FEAT_SIX", "5"))          # sixes that get their commentary finished (the rest: shot only)
 MIN_SIX = int(os.environ.get("HL_MIN_SIX", "30"))         # Naem: "20+ six to lena hi hoga" -> sixes are only dropped down to this many (loudest kept)
@@ -434,6 +437,8 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None, recap=None):
     for c in clips:
         if out and c["start"] <= out[-1]["end"] + 1.5:
             o = out[-1]
+            if c.get("t") is not None:
+                o["t"] = min(o["t"], c["t"]) if o.get("t") is not None else c["t"]
             o["end"] = max(o["end"], c["end"])
             if pri.get(c["event"], 0) > pri.get(o["event"], 0):
                 o["event"] = c["event"]
@@ -442,7 +447,7 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None, recap=None):
             o["feat"] = bool(o.get("feat") or c.get("feat"))
         else:
             out.append({"start": c["start"], "end": c["end"], "event": c["event"], "parts": 1, "replay": bool(c.get("replay")),
-                        "feat": bool(c.get("feat"))})
+                        "feat": bool(c.get("feat")), "t": c.get("t")})
     total = sum(o["end"] - o["start"] for o in out)
     counts = {}
     for c in clips:
@@ -497,6 +502,8 @@ def snap_plan(plan, segs, dur):
             m = merged[-1]
             m["end"] = max(m["end"], c["end"])
             m["parts"] = m.get("parts", 1) + c.get("parts", 1)
+            if c.get("t") is not None:
+                m["t"] = min(m["t"], c["t"]) if m.get("t") is not None else c["t"]
         else:
             merged.append(c)
     plan["segs"] = merged
@@ -887,6 +894,12 @@ def build_plan(H, wav, dur, db, target_min, hop=0.5, src=None):
                 plan = snap_plan(plan, transcribe_ranges(H, wav, wins, dur), dur)
             except Exception as e:                                  # noqa -- unsnapped plan is still a valid plan
                 H.log("sentence snap failed:", e)
+            try:                                                    # LOOK at every ball clip, move the edges until run-up -> shot -> result shows
+                import hl_verify
+                H.hl_review.set_live("transcribe", "Har clip ke frames check ho rahe hain", force=True)
+                hl_verify.verify_plan(H, src, plan, dur)
+            except Exception as e:                                  # noqa -- an unchecked plan is still a plan
+                H.log("frame check failed:", e)
             H.log("cutter plan (scoreboard):", plan["info"], "dropped", plan["dropped"], "total %.0fs" % plan["total"])
             return plan
         H.log("scoreboard gave too few events -> commentary fallback")

@@ -62,6 +62,10 @@ env:
   YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
   LML_FB_PAGE_ID: ${{ secrets.LML_FB_PAGE_ID }}
   LML_FB_PAGE_TOKEN: ${{ secrets.LML_FB_PAGE_TOKEN }}
+  # frame check of every ball clip (hl_verify.py): ONE of these keys is enough (free tiers work); without a key the check is skipped
+  GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+  HL_VISION_MODEL: ${{ vars.HL_VISION_MODEL || '' }}
 
 jobs:
   highlights:

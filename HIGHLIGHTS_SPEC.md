@@ -56,3 +56,18 @@ Idea, not built: a cheap score before any download — result margin (close fini
 ytm: 1882625 (scout + confirm flow), c2e9528 (toss start / last ball + 45 s), a24abc1 (toss + result required), diag frames workflow.
 Xbot: a253458 (Step-1 confirm card, confirm|skip|rescout actions).
 Render for Xbot needs a Manual Deploy to show the new card.
+
+
+## 7. Frame check of every ball clip (2026-11-16, hl_verify.py) -- READ THIS FIRST when a clip looks wrong
+Problem (3 days of fixes): the shot time was GUESSED (score typing delay, graphic, camera cut-away) and the constants changed per match.
+Frames of the 523 s NGPL reel (checked second by second): fours / sixes started with the ball already flying, no run-up, no shot.
+Now the bot LOOKS at each clip (`hl_verify.verify_plan`, last step of `hl_cutter.build_plan`):
+1. 8 frames of the planned clip -> ONE vision call (Groq / Gemini, OpenAI-compatible) labels each frame RUNUP / SHOT / TRACK / AFTER / REPLAY / OTHER.
+2. `hl_verify.judge()` (plain rules, unit tested) decides: starts after the shot -> earlier; starts in the previous ball -> later; run-up longer than 7 s -> trim;
+   ends before the shot / result -> extend; next ball's run-up or a replay inside -> trim the end. Ambiguous start (AFTER first): probe earlier, flip to later if nothing new shows.
+3. Edges move, the clip is checked again (max 8 tries); only an OK clip is accepted, otherwise the best try is kept and logged `UNSURE`. One clip at a time, in order.
+Key: Actions secret `GROQ_API_KEY` or `GEMINI_API_KEY` (model auto-picked from /models, or variable `HL_VISION_MODEL`). No key = check skipped (log line `[verify] OFF`).
+Also: PAD_SB pre-roll 3.5 -> 8 s (run-up stays in even without the check), HL_MAX_S 540 -> 660.
+Scoreboard fix: a score jump typed after 3+ balls (wicket, or 18 runs in 6 balls) used to create NO event (last over of the NGPL final was missing);
+now wickets always count and `burst` placeholders make the graphic scan look at the whole stretch (`hl_scoreboard.events_from_states`, `fine_banner_scan`).
+Tests: `PYTHONPATH=. python tests/test_hl_verify.py` and `tests/test_hl_burst.py`. Log lines: `[verify] four 97.0-108.5 OK (2 tries)`.
