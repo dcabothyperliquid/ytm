@@ -38,6 +38,9 @@ TOSSDONE_RX = re.compile(r"WON\s+THE\s+T[O0]SS|(?:OPTED|ELECTED|CHOSE|CHOOSE)\s+
 RESULT_RX = re.compile(r"\bWON\s+BY\b|MATCH\s+(?:TIED|DRAWN)|\bNO\s+RESULT\b|\bABANDONED\b|\bSUPER\s+OVER\b", re.I)
 CHASE_RX = re.compile(r"\bNEED\s+\d+|TARGET\s*[-:]?\s*\d+|\bRRR\b|\bCRR\b", re.I)
 OVERS_RX = re.compile(r"\b\d{1,2}\.\d\s*\(\s*\d{1,2}\s*\)")
+OVERS_PAIR = re.compile(r"\b(\d{1,2})\.([0-6])\s*\(\s*(\d{1,2})\s*\)")
+TIE_RX = re.compile(r"MATCH\s+TIED|SUPER\s+OVER|\bTIE\b", re.I)
+LASTOVER_WINDOW = 300.0   # s before the result banner in which the 2nd-innings over counter is read
 TEAMV_RX = re.compile(r"\b[A-Z]{3}\s?V\s?[A-Z]{3}\b|\b\d{1,3}\s*[-–]\s*\d{1,2}\s+\d{1,2}\.\d\b")
 PLAYWORD_RX = re.compile(r"\bRUN\s+RATE\b|\bCRR\b|\bRRR\b|\bFOURS\b|\bSIXES\b|\bTARGET\b|\bNEED\s+\d+|\bPARTNERSHIP\b|\bINNING\s+\d", re.I)
 MATCHNO_RX = re.compile(r"MATCH\s*N[O0GQ]\.?\s*[-:]?\s*(\d{1,3})", re.I)
@@ -95,6 +98,21 @@ def ident_changed(rows, t_prev_start, t_block_first, t_block_last):
 
 
 # ---------------------------------------------------------------- pure logic (unit-testable)
+NEW_MATCH_MIN_GAP = 35 * 60      # a new match starts at least this long after the previous one's toss
+NEW_MATCH_PLAY = 100             # ... and has this many live-scoreboard frames (15 s each, ~25 min) in the 40 min after its toss
+
+
+def _long_new_match(rows, prev, b):
+    """Neither a result banner nor a team change was read between two toss blocks (OCR misses on some broadcasts).
+    Still a NEW match when the previous one clearly had a 2nd innings (chase banners) and a long live stretch follows this toss -
+    a 'toss' ticker in the middle of the chase is followed by the end of the match only (too short)."""
+    if b[0] - prev[0] < NEW_MATCH_MIN_GAP:
+        return False
+    if not any(f["chase"] for t, f, _ in rows if prev[1] < t < b[0]):
+        return False
+    return sum(1 for t, f, _ in rows if b[1] < t <= b[1] + 40 * 60 and f["play"]) >= NEW_MATCH_PLAY
+
+
 def segment(rows, dur, title="", last=False, debug=None):
     """rows = [(t_seconds, flags_dict, text)] sorted by t. Returns list of match dicts.
     last=True: only the LAST match of the VOD (a relay holds 4-5 matches, the final is the last one) - see _last_match."""
@@ -119,7 +137,7 @@ def segment(rows, dur, title="", last=False, debug=None):
             continue
         # a "toss" ticker in the middle of a match is not a new match: a real new match needs a result banner after the previous start
         if valid and not any(f["result"] for t, f, _ in rows if valid[-1][1] < t < b[0]) \
-                and not ident_changed(rows, valid[-1][0], b[0], b[1]):
+                and not ident_changed(rows, valid[-1][0], b[0], b[1]) and not _long_new_match(rows, valid[-1], b):
             continue
         valid.append(b)
 
@@ -190,6 +208,24 @@ def _last_match(rows, dur, title="", debug=None):
     return m
 
 
+def _last_over_finish(rows, t_res, text_res=""):
+    """Did the 2nd innings end in the LAST over?  -> (True|False|None, "5.2/6" | "").
+    Reads the over counter "5.2 (6)" (overs bowled, match overs) from the frames just before the result banner; a tie / super over counts."""
+    if TIE_RX.search(text_res or ""):
+        return True, "tie"
+    best = None
+    for t, f, txt in rows:
+        if t_res - LASTOVER_WINDOW <= t < t_res:
+            for m in OVERS_PAIR.finditer((txt or "").upper()):
+                ov, ball, mx = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                if 1 <= mx <= 50 and ov <= mx:
+                    best = (t, ov, ball, mx)               # the LAST readable counter before the result
+    if not best:
+        return None, ""
+    _, ov, ball, mx = best
+    return ov >= mx - 1, "%d.%d/%d" % (ov, ball, mx)
+
+
 def _one_match(rows, t_first, t_last, t_done, limit, dur, toss_seen, title=""):
     if toss_seen:
         ref = t_done - 60.0 if (t_done is not None and t_done - t_first > TOSS_PENDING_MAX) else t_first
@@ -200,7 +236,7 @@ def _one_match(rows, t_first, t_last, t_done, limit, dur, toss_seen, title=""):
     res = [r for r in span if r[1]["result"]]
     play_n = sum(1 for r in span if r[1]["play"])
     m = {"start": round(start, 1), "end": None, "toss_seen": toss_seen, "result": False,
-         "play_frames": play_n, "chase_frames": 0, "match_no": None, "winner": "", "result_at": None, "final": False}
+         "play_frames": play_n, "chase_frames": 0, "match_no": None, "winner": "", "result_at": None, "final": False, "last_over": None, "overs_at_end": ""}
     nos = Counter(MATCHNO_RX.search(r[2].upper()).group(1) for r in span if MATCHNO_RX.search(r[2].upper()))
     if nos:
         m["match_no"] = nos.most_common(1)[0][0]
@@ -216,6 +252,7 @@ def _one_match(rows, t_first, t_last, t_done, limit, dur, toss_seen, title=""):
         m["winner"] = ("%s WON BY %s" % (w.group(1).strip(), w.group(2).strip())) if w else res[0][2][:60]
         mid = start + (t_res - start) * 0.5
         m["chase_frames"] = sum(1 for r in span if r[0] >= mid and r[0] <= t_res and r[1]["chase"])
+        m["last_over"], m["overs_at_end"] = _last_over_finish(rows, t_res, res[0][2])
     elif limit < dur and play_n >= MIN_PLAY_FRAMES and any(r[1]["chase"] for r in span):
         # no "WON BY" banner was read, but another match starts right after and this one had a chase (2nd innings):
         # it ended where its last live-scoreboard frame is
@@ -226,6 +263,7 @@ def _one_match(rows, t_first, t_last, t_done, limit, dur, toss_seen, title=""):
             m["end"] = round(min(last_play[-1] + CELEBRATION, limit - 10.0), 1)
             m["winner"] = "(result banner nahi padha, agle match se pehle ka last ball)"
             m["chase_frames"] = sum(1 for r in span if r[1]["chase"])
+            m["last_over"], m["overs_at_end"] = _last_over_finish(rows, last_play[-1] + 30.0)
     return m
 
 

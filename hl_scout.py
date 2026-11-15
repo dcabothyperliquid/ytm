@@ -264,8 +264,17 @@ def scout_vid(H, vid, title="", dur_hint=None, want=None):
 def _entry_from_board(H, vid, title, bm, want=None):
     import hl_board
     ms = bm["matches"]
+    # RULE (Naem 2026-11-15): highlights ONLY for a match whose 2nd innings ended in the LAST OVER (thriller) - not every match.
+    # A match asked for by hand (HL_MATCH number / "last") is always made.
+    thrill = [m for m in ms if m["result"] and m.get("last_over")]
+    unknown = [m for m in ms if m["result"] and m.get("last_over") is None]
+    known_no = [m for m in ms if m["result"] and m.get("last_over") is False]
     best = (next((m for m in ms if want and str(m["match_no"]) == str(want)), None)           # the match number asked for (HL_MATCH)
-            or next((m for m in ms if m["result"] and m["toss_seen"]), None) or next((m for m in ms if m["result"]), None) or ms[0])
+            or (ms[0] if want == "last" else None)
+            or next((m for m in thrill if m["toss_seen"]), None) or (thrill[0] if thrill else None)
+            or next((m for m in unknown if m["toss_seen"]), None) or (unknown[0] if unknown else None)
+            or next((m for m in ms if m["result"]), None) or ms[0])
+    no_thrill = bool(not want and known_no and not thrill and not unknown)
     done = bool(best["result"] and best["end"])
     ev = []
     for m in ms:
@@ -273,20 +282,24 @@ def _entry_from_board(H, vid, title, bm, want=None):
         ev.append("%s%s: %s se %s (%s)" % (tag, " <- ye wala" if m is best else "", hl_board.fmt(m["start"]),
                                            hl_board.fmt(m["end"]) if m["end"] else "result nahi mila",
                                            m["winner"] or ("toss nahi mila, first ball se" if not m["toss_seen"] else "result banner nahi")))
+    ev.append("Last over finish: %s" % ({True: "HAAN (%s)" % best.get("overs_at_end", ""), False: "NAHI (%s)" % best.get("overs_at_end", ""),
+                                        None: "pata nahi (over counter nahi padha)"}[best.get("last_over")]))
     if best["chase_frames"]:
         ev.append("2nd innings ke signs (target/need) mile")
     if best.get("final"):
         ev.append("FINAL: result ke baad cup lift tak (+10 min)")
     ev += [d[:200] for d in (bm.get("debug") or [])]
-    if done:
+    if no_thrill:
+        reason = "Koi match last over me khatam nahi hua (%s) - highlight nahi banega" % ", ".join(m.get("overs_at_end") or "?" for m in known_no)
+    elif done:
         reason = "Scoreboard se match mila: toss se result tak — time check karke Confirm karo" if best["toss_seen"] \
             else "Scoreboard se match mila (toss nahi mila, first ball se) — time check karke Confirm karo"
     else:
         reason = "Toss mila par result banner nahi — match poora nahi laga, pakka check karo"
     entry = {"vid": vid, "title": H.clean_title(title) or title or vid, "vod_min": round(bm["dur"] / 60.0, 1),
-             "found": int(time.time()), "status": "pending" if done else "incomplete", "start": best["start"],
+             "found": int(time.time()), "status": "skipped" if no_thrill else ("pending" if done else "incomplete"), "start": best["start"],
              "end": best["end"], "finished": done, "reason": reason, "evidence": ev[:12], "source": "scoreboard",
-             "match_no": best["match_no"], "final": bool(best.get("final")),
+             "match_no": best["match_no"], "final": bool(best.get("final")), "last_over": best.get("last_over"), "overs_at_end": best.get("overs_at_end", ""),
              "others": [{"start": m["start"], "end": m["end"], "match_no": m["match_no"]} for m in ms if m is not best]}
 
     def mut(st):
