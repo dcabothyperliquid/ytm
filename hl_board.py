@@ -95,9 +95,14 @@ def ident_changed(rows, t_prev_start, t_block_first, t_block_last):
 
 
 # ---------------------------------------------------------------- pure logic (unit-testable)
-def segment(rows, dur, title=""):
-    """rows = [(t_seconds, flags_dict, text)] sorted by t. Returns list of match dicts."""
+def segment(rows, dur, title="", last=False, debug=None):
+    """rows = [(t_seconds, flags_dict, text)] sorted by t. Returns list of match dicts.
+    last=True: only the LAST match of the VOD (a relay holds 4-5 matches, the final is the last one) - see _last_match."""
     rows = sorted(rows, key=lambda r: r[0])
+    if last:
+        m = _last_match(rows, dur, title, debug)
+        if m:
+            return [m]
     toss = [r for r in rows if r[1]["toss"]]
     blocks = []                                           # [first_t, last_t, tossdone_t|None]
     for t, f, _ in toss:
@@ -129,6 +134,60 @@ def segment(rows, dur, title=""):
     if early and len(play_before) >= MIN_PLAY_FRAMES:
         out.insert(0, _one_match(rows, play_before[0][0], play_before[0][0], None, first_lim, dur, toss_seen=False, title=title))
     return out
+
+
+def _last_match(rows, dur, title="", debug=None):
+    """The last match of a VOD whose scoreboard banners were only partly readable (first-result logic then glues 4-5 matches into one).
+    end   = the LAST result banner cluster (+ cup-lift tail for a final).
+    start = toss block of that match: among the toss blocks before the result that have live play after them, walk back from the
+            nearest one while the scoreboard still shows the final's teams / match number (same match = same two team codes);
+            teams unreadable -> the last block that is at least 25 min before the result (a match is never shorter)."""
+    res_rows = [r for r in rows if r[1]["result"]]
+    if not res_rows:
+        return None
+    clusters = []
+    for r in res_rows:
+        if clusters and r[0] - clusters[-1][-1] <= TOSS_GAP:
+            clusters[-1].append(r[0])
+        else:
+            clusters.append([r[0]])
+    t_res = clusters[-1][0]
+    blocks = []
+    for t, f, _ in [r for r in rows if r[1]["toss"]]:
+        if blocks and t - blocks[-1][1] <= TOSS_GAP:
+            blocks[-1][1] = t
+            if f["tossdone"] and blocks[-1][2] is None:
+                blocks[-1][2] = t
+        else:
+            blocks.append([t, t, t if f["tossdone"] else None])
+    cands = [b for b in blocks if b[0] < t_res - 25 * 60
+             and sum(1 for t, f, _ in rows if b[1] < t <= b[1] + PLAY_AFTER_TOSS and f["play"]) >= MIN_PLAY_FRAMES]
+    if debug is not None:
+        debug.append("result banners at: " + ", ".join(fmt(c[0]) for c in clusters))
+        debug.append("toss blocks: " + ", ".join("%s-%s%s" % (fmt(b[0]), fmt(b[1]), "*" if b[2] is not None else "") for b in blocks))
+        debug.append("candidates for the last match: " + ", ".join(fmt(b[0]) for b in cands))
+    if not cands:
+        return None
+    no_f, codes_f = _ident(rows, t_res - IDENT_WINDOW, t_res)
+    pick = cands[-1]
+    if len(codes_f) >= 2 or no_f:
+        i = len(cands) - 1
+        same = []
+        while i >= 0:
+            b = cands[i]
+            no_b, codes_b = _ident(rows, b[1], b[1] + IDENT_WINDOW)
+            if (no_f and no_b and no_f == no_b) or (len(codes_f) >= 2 and len(codes_b & codes_f) >= 2):
+                same.append(b)
+                i -= 1
+            else:
+                break
+        if same:
+            pick = same[-1]                      # earliest block of the unbroken run that shows the final's teams
+        if debug is not None:
+            debug.append("final's teams %s / match no %s -> start block %s" % (sorted(codes_f), no_f, fmt(pick[0])))
+    m = _one_match(rows, pick[0], pick[1], pick[2], dur, dur, toss_seen=True, title=title)
+    m["last_pick"] = True
+    return m
 
 
 def _one_match(rows, t_first, t_last, t_done, limit, dur, toss_seen, title=""):
@@ -214,7 +273,7 @@ def _ocr(path):
     return txt
 
 
-def scan(H, vid, title="", dur_hint=None):
+def scan(H, vid, title="", dur_hint=None, last=False):
     """Returns {"dur", "frames", "hits", "matches":[...]} or None when no scoreboard could be read."""
     if not shutil.which("tesseract"):
         H.note("tesseract not installed - scoreboard scout skipped", "warning", "hl scout")
@@ -249,4 +308,8 @@ def scan(H, vid, title="", dur_hint=None):
     H.log("scoreboard: %d/%d strips had scoreboard text" % (hits, len(rows)))
     if hits < 5:
         return None
-    return {"dur": dur, "frames": len(rows), "hits": hits, "matches": segment(rows, dur or rows[-1][0] + STEP, title)}
+    dbg = []
+    ms = segment(rows, dur or rows[-1][0] + STEP, title, last=last, debug=dbg)
+    for d in dbg:
+        H.log("board debug: " + d)
+    return {"dur": dur, "frames": len(rows), "hits": hits, "matches": ms, "debug": dbg}

@@ -211,7 +211,7 @@ def scout_vid(H, vid, title="", dur_hint=None, want=None):
     # 1) scoreboard OCR first (reliable); commentary scan below is only the fallback
     try:
         import hl_board
-        bm = hl_board.scan(H, vid, title, dur_hint)
+        bm = hl_board.scan(H, vid, title, dur_hint, last=(want == "last"))
     except Exception as e:                          # noqa
         H.note("scoreboard scout failed: %s" % e, "warning", "hl scout")
         bm = None
@@ -277,6 +277,7 @@ def _entry_from_board(H, vid, title, bm, want=None):
         ev.append("2nd innings ke signs (target/need) mile")
     if best.get("final"):
         ev.append("FINAL: result ke baad cup lift tak (+10 min)")
+    ev += [d[:200] for d in (bm.get("debug") or [])]
     if done:
         reason = "Scoreboard se match mila: toss se result tak — time check karke Confirm karo" if best["toss_seen"] \
             else "Scoreboard se match mila (toss nahi mila, first ball se) — time check karke Confirm karo"
@@ -284,7 +285,7 @@ def _entry_from_board(H, vid, title, bm, want=None):
         reason = "Toss mila par result banner nahi — match poora nahi laga, pakka check karo"
     entry = {"vid": vid, "title": H.clean_title(title) or title or vid, "vod_min": round(bm["dur"] / 60.0, 1),
              "found": int(time.time()), "status": "pending" if done else "incomplete", "start": best["start"],
-             "end": best["end"], "finished": done, "reason": reason, "evidence": ev[:8], "source": "scoreboard",
+             "end": best["end"], "finished": done, "reason": reason, "evidence": ev[:12], "source": "scoreboard",
              "match_no": best["match_no"], "final": bool(best.get("final")),
              "others": [{"start": m["start"], "end": m["end"], "match_no": m["match_no"]} for m in ms if m is not best]}
 
