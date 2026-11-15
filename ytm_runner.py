@@ -928,10 +928,10 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False):
                           % (px, py, pw, ph, font, max(9, min(int(ph) - 10, int(pw) // 4)), px, pw, py, ph))
     wm = None
     badge = None
-    try:                                                          # subtle badge: 0.0 (invisible) .. 1.0 (solid); default 0.30 = noticed only on a close look
-        wm_alpha = "%.2f" % max(0.0, min(1.0, float(os.environ.get("YTM_WM_ALPHA", "0.30"))))
+    try:                                                          # subtle badge: 0.0 (invisible) .. 1.0 (solid); default 1.0 = solid, nothing shows through
+        wm_alpha = "%.2f" % max(0.0, min(1.0, float(os.environ.get("YTM_WM_ALPHA", "1.0"))))
     except ValueError:
-        wm_alpha = "0.30"
+        wm_alpha = "1.00"
     if strip and os.environ.get("YTM_WM", "on").strip().lower() != "off":
         # OUR LML SPORTS badge, centre-bottom, on every relay (own branding; no source mark is removed, only covered by the pill).
         # centre-bottom spot (x471-801,y577-615) carries OUR logo + text. YTM_WM=off hides it.
