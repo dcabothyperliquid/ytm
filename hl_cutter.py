@@ -189,7 +189,32 @@ def end_block(segs, dur):
 
 
 # ---------------------------------------------------------------- the plan
-def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
+SCORE_RX = re.compile(r"\d+\s*(?:runs?|for|/)|\b(?:score|scored|target|total|innings|chase|set)\b|रन|स्कोर|टारगेट|लक्ष्य|पारी|इनिंग", re.I)
+RECAP_MIN, RECAP_MAX = 10.0, 20.0
+
+
+def recap_window(segs, br_a, br_b):
+    """Innings break: the commentator telling the first-innings score -> (start, end) of 10-20 s of that talk, or None.
+    segs = whisper sentences of the break. The first sentence that mentions the score / target starts it; following
+    sentences are added while they stay under RECAP_MAX; whole sentences only."""
+    brk = sorted([x for x in segs if br_a - 5.0 <= x["start"] <= br_b], key=lambda x: x["start"])
+    hit = [x for x in brk if SCORE_RX.search(x["text"]) and re.search(r"\d|रन|score|target|total|स्कोर|टारगेट", x["text"], re.I)]
+    if not hit:
+        return None
+    a = max(0.0, hit[0]["start"] - 0.4)
+    b = hit[0]["end"] + 0.5
+    for x in brk:
+        if x["start"] < hit[0]["start"] or x is hit[0]:
+            continue
+        if x["start"] - b > 2.5 or x["end"] - a > RECAP_MAX:
+            break
+        b = x["end"] + 0.5
+    if b - a < RECAP_MIN:                                      # short sentence: keep a little of the talk around it (never over RECAP_MAX)
+        b = min(a + RECAP_MIN, max(b, br_b))
+    return a, min(b, a + RECAP_MAX)
+
+
+def plan_from_segments(segs, dur, target_s, energy=None, sb=None, recap=None):
     """-> dict(segs=[{start,end,event,...}], total, dropped={...}, info={...})
     sb = scoreboard analysis (hl_scoreboard.analyze_window): exact ball events / innings / last over instead of commentary keywords."""
     if sb:
@@ -212,6 +237,8 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
         end_a, end_b = end_block(segs, dur)
         br_a, br_b = innings_break(segs, dur)
         ev = [e for e in events_from_segments(segs, energy) if play_from <= e["t"] < end_a]
+        if recap is None:
+            recap = recap_window(segs, br_a, br_b)
 
     def in_death(t):
         if sb:
@@ -238,18 +265,32 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
         if sb and e["t"] >= sb["last_over_start"] - 2.0 and e["t"] > sb["innings"][-1][0]:
             c["lastover"] = True
         clips.append(c)
-    if sb:
-        allb = sorted([e for e in sb["events"] if play_from <= e["t"] < end_a], key=lambda e: e["t"])
-        i1 = [e for e in allb if e["t"] < br_a]
-        extra = []
-        if i1:
-            extra += [("first_ball", i1[0]), ("last_ball", i1[-1])]
-        for nm, e in extra:
-            if not any(c["event"] != "toss" and abs(c.get("t", -99) - e["t"]) < 4 for c in clips):
-                clips.append({"start": max(0.0, e["t"] - 6.0), "end": min(end_a, e["t_end"] + 3.0), "event": nm, "must": True,
-                              "db": 0.0, "t": e["t"], "feat": True})
-        if br_b - br_a > 20:
-            clips.append({"start": br_a + 2.0, "end": br_a + 15.0, "event": "recap", "must": True, "db": 0.0, "t": br_a + 2.0, "feat": True})
+    allb = sorted([e for e in ev if play_from <= e["t"] < end_a], key=lambda e: e["t"])
+    i1 = [e for e in allb if e["t"] < br_a]
+    i2 = [e for e in allb if e["t"] >= br_b]
+    extra = []
+    if i1:
+        extra += [("first_ball", i1[0]), ("last_ball", i1[-1])]       # match's first ball + last ball of the 1st innings
+    if i2:
+        extra.append(("first_ball2", i2[0]))                           # first ball of the 2nd innings
+    for nm, e in extra:
+        if not any(c["event"] != "toss" and abs(c.get("t", -99) - e["t"]) < 4 for c in clips):
+            clips.append({"start": max(0.0, e["t"] - 6.0), "end": min(end_a, e["t_end"] + 3.0), "event": nm, "must": True,
+                          "db": 0.0, "t": e["t"], "feat": True})
+    legal2 = [e for e in i2 if e["kind"] not in ("wide", "noball")]
+    for e in legal2[-6:]:                                              # the LAST SIX legal balls of the 2nd innings, ball by ball
+        hit = [c for c in clips if c["event"] != "toss" and abs(c.get("t", -99) - e["t"]) < 2.5]
+        if hit:
+            for c in hit:
+                c["lastover"] = True
+        else:
+            pa, pb = (PAD_SB if sb else PAD)[e["kind"]]
+            clips.append({"start": max(0.0, e["t"] - pa), "end": min(end_a, e["t_end"] + pb), "event": e["kind"], "must": True,
+                          "db": float(e.get("db", 0.0)), "t": e["t"], "lastover": True})
+    if recap:                                                          # innings break: commentary of the first-innings score, 10-20 s
+        clips.append({"start": recap[0], "end": recap[1], "event": "recap", "must": True, "db": 0.0, "t": recap[0], "feat": True})
+    elif br_b - br_a > 20:
+        clips.append({"start": br_a + 2.0, "end": br_a + 15.0, "event": "recap", "must": True, "db": 0.0, "t": br_a + 2.0, "feat": True})
     sixes = sorted([c for c in clips if c["event"] == "six"], key=lambda c: c["db"], reverse=True)
     for c in sixes[:TOP_SIXES]:                        # replay only for the biggest few sixes
         c["end"] = min(end_a, c["end"] + SIX_REPLAY)
@@ -711,7 +752,16 @@ def build_plan(H, wav, dur, db, target_min, hop=0.5, src=None):
                         sb["toss_start"] = t2
             except Exception as e:                                  # noqa -- banner estimates still make a plan
                 H.log("exact shot time failed:", e)
-            plan = plan_from_segments([], dur, target_min * 60.0 * 1.5, energy, sb=sb)
+            recap = None
+            try:                                                    # innings break: whisper only the break, find where the first-innings score is told
+                br_a, br_b = sb["break"]
+                if br_b - br_a > 20:
+                    H.hl_review.set_live("transcribe", "Innings break ki commentary (score) dhoondh raha hai", force=True)
+                    recap = recap_window(transcribe_ranges(H, wav, [(br_a, min(br_b, br_a + 300.0))], dur), br_a, br_b)
+                    H.log("innings-break recap window:", recap)
+            except Exception as e:                                  # noqa -- fixed 13 s fallback in the plan
+                H.log("recap search failed:", e)
+            plan = plan_from_segments([], dur, target_min * 60.0 * 1.5, energy, sb=sb, recap=recap)
 
             def _spans(pl):
                 rw = []
@@ -729,7 +779,7 @@ def build_plan(H, wav, dur, db, target_min, hop=0.5, src=None):
                 n_mv = anchor_events(sb["events"], sp)              # events that sit on a replay -> back to the live ball
                 if n_mv:
                     H.log("live-ball anchoring: moved", n_mv, "events off a replay")
-                    plan = plan_from_segments([], dur, target_min * 60.0 * 1.5, energy, sb=sb)
+                    plan = plan_from_segments([], dur, target_min * 60.0 * 1.5, energy, sb=sb, recap=recap)
                     sp = _spans(plan)
                 plan = apply_replay_cut(plan, sp, dur)
             except Exception as e:                                  # noqa -- a plan with replays is still a plan
