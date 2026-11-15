@@ -46,7 +46,7 @@ jobs:
           done
           command -v ffmpeg
           for i in 1 2 3; do
-            timeout 180 pip install -U "yt-dlp[default]" && break
+            timeout 180 pip install -U "yt-dlp[default]" pillow && break
             echo "pip retry $i"; sleep 5
           done
           command -v yt-dlp
