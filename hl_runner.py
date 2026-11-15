@@ -738,12 +738,23 @@ def process(src, outdir, meta, offset=0.0):
     log("done: highlights %s + %d shorts" % (fmt(total), len(shorts)))
     note("rendered: highlights %s + %d shorts" % (fmt(total), len(shorts)))
     out_shorts = []
+
+    def _short_t(m, lab, tg, name):
+        old = ("%s %s | %s #shorts %s" % (EMOJI.get(m["event"], "⚡"), lab.title().rstrip("!"), mt, tg)).strip()
+        if os.environ.get("YTM_STYLE", "on").lower() == "off" or m["event"] not in ("six", "wicket", "hattrick", "finish", "catch"):
+            return old
+        try:
+            import ytm_style
+            t = ytm_style.short_title(m["event"], mt, seed=name)
+            return ("%s %s" % (t, tg)).strip()[:100]
+        except Exception:
+            return old
     for name, m, s_, e_ in shorts:
         lab = m.get("label") or "BIG MOMENT"
         tg = _ev_tag(m["event"])
         out_shorts.append({"id": name[:-4], "file": name, "event": m["event"], "score": m["score"],
                            "start": round(s_ + offset, 1), "end": round(e_ + offset, 1), "heard": m["text"][:140],
-                           "label": lab, "title": ("%s %s | %s #shorts %s" % (EMOJI.get(m["event"], "⚡"), lab.title().rstrip("!"), mt, tg)).strip()})
+                           "label": lab, "title": _short_t(m, lab, tg, name)})
     return {"dur": dur, "ranked": ranked, "finish": finish,
             "highlight": {"file": "highlights.mp4", "dur": round(total), "chapters": [[round(ct), ev] for ct, ev, at in chapters]},
             "shorts": out_shorts}

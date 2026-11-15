@@ -116,10 +116,10 @@ _HL = [
     "\U0001F6A8 Jeet Ya Haar? {m} \u2013 Pura Match 1 Video Mein | Highlights",
 ]
 _SHORT = {
-    "six": ["\U0001F4A5 Yeh Six Dekh Ke Hosh Ud Jayenge! \U0001F525 {m}", "\U0001F680 Stadium Ke Bahar Gayi Gend! {m}"],
-    "wicket": ["\u2620\uFE0F Kya Wicket Hai Yeh! {m}", "\U0001F631 Stumps Udd Gaye! {m}"],
+    "six": ["\U0001F4A5 Yeh Six Dekh Ke Hosh Ud Jayenge! \U0001F525 {m}", "\U0001F680 Kya Chhakka Hai Yeh! {m}"],
+    "wicket": ["\u2620\uFE0F Kya Wicket Hai Yeh! {m}", "\u261D\uFE0F Wicket Alert! Dekho Kya Hua {m}"],
     "hattrick": ["\U0001F525 HAT-TRICK! Believe Nahi Hoga {m}", "\U0001F3A9 Hat-Trick Alert! {m}"],
-    "finish": ["\U0001F631 Last Over Ka Thriller! {m}", "\U0001F62E\u200D\U0001F4A8 Saans Rok Dene Wala Finish! {m}"],
+    "finish": ["\U0001F631 Last Over Ka Thriller! {m}", "\U0001F62E Last Over Mein Kya Hua Dekho! {m}"],
     "catch": ["\U0001F64C Kya Catch Pakda Hai! {m}", "\U0001F9E4 Catch Of The Match! {m}"],
 }
 
