@@ -860,17 +860,19 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
         for bx in boxes.split(";"):
             if bx.count(":") == 3:
                 chain += ",delogo=x=%s:y=%s:w=%s:h=%s" % tuple(bx.split(":"))
-    # other channels' logos/watermarks (permission-holder OK'd removal): REMOVED from the source picture with delogo (filled from the
-    # surrounding pixels), before our tag/logo go on. Boxes (1280x720): bottom-left channel logo, right-edge watermark above the
-    # scoreboard, bottom-right corner, two small icons either side of the bottom-centre mark. YTM_REMOVE="x:y:w:h;..." overrides, =off disables.
-    # Default boxes: 3 corner/edge marks + 3 bottom-centre watermark boxes (the latter only while strip=True, i.e. always unless
-    # YTM_MARK_DETECT=on and the probe says there is no watermark). Applied to the SOURCE picture before our tag/logo go on.
+    # Source-channel marks (permission-holder OK'd removal) are removed from the SOURCE picture before our logo goes on.
+    # YTM_REMOVE="x:y:w:h;..." overrides the delogo boxes (1280x720 frame), =off disables.
+    # Ten 10 centre-bottom watermark (icon + text + icon) -> delogo; on plain grass it leaves no visible patch.
     rm = os.environ.get("YTM_REMOVE", "").strip() or (";".join(["470:578:48:36", "764:578:48:36", "508:576:256:38"]) if strip else "off")
-    # (old corner boxes 1:695:150:24;1155:589:122:30;1130:695:148:24 left white/blur patches under the timer and at the ticker ends -> not default; add via YTM_REMOVE if a source needs them)
     if rm.lower() != "off":
         for bx in rm.split(";"):
             if re.fullmatch(r"\d{1,4}:\d{1,4}:\d{1,4}:\d{1,4}", bx.strip()):
                 chain += ",delogo=x=%s:y=%s:w=%s:h=%s" % tuple(bx.strip().split(":"))
+    bo = os.environ.get("YTM_BLACKOUT", "0:691:153:25").strip()          # source logo on the left end of the black ticker bar -> solid black (YTM_BLACKOUT=off disables)
+    if bo.lower() != "off":
+        for bx in bo.split(";"):
+            if re.fullmatch(r"\d{1,4}:\d{1,4}:\d{1,4}:\d{1,4}", bx.strip()):
+                chain += ",drawbox=x=%s:y=%s:w=%s:h=%s:color=black:t=fill" % tuple(bx.strip().split(":"))
     # centre-bottom "ACL" mark (permission-holder OK'd removal): covered by a solid branded strip with our tag (no blur smear).
     # YTM_TAG="" / "off" -> strip off and the mark is delogo-smeared instead. YTM_TAG_POS="cx:cy", YTM_TAG_BOX="w:h" (1280x720 frame).
     tag = os.environ.get("YTM_TAG", "off").strip() if strip else "off"      # bottom-centre brand tag OFF by default (YTM_TAG=LML brings the text strip back)
