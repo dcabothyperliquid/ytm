@@ -226,6 +226,7 @@ class Detector:
                 if kws and not any(k in t.lower() for k in kws):
                     continue
                 out.append({"video_id": v, "title": t[:120], "channel": c.get("name") or c["value"],
+                            "handle": c["value"], "channel_id": cid,
                             "url": "https://www.youtube.com/watch?v=" + v})
         return out, errs
 
@@ -969,7 +970,7 @@ class Relay:
         self.st, self.rtmp, self._probe, self._popen = state, rtmp, _probe, _popen
         self.proc, self.restarts = None, 0
 
-    def _spawn(self, hls):
+    def _spawn(self, hls, cand=None):
         self._elog = open("/tmp/ffmpeg.log", "wb")
         self._last_t, self._last_t_at = None, time.time()
         strip = True
@@ -989,9 +990,10 @@ class Relay:
                 self.st["logo_probe"] = {"video_id": vid, "spec": spec, "ver": LOGO_PROBE_VER, "at": int(time.time())}
         _y, _f = outputs()
         self.st["fb_on"], self.st["yt_on"] = bool(_f), bool(_y)
-        ch = str((self.st.get("relay") or {}).get("channel") or "").strip().lstrip("@").lower()
+        _rl = dict(cand or {}) or (self.st.get("relay") or {})     # fresh start: st["relay"] is not set yet when ffmpeg spawns -> use the candidate itself
+        chs = {str(_rl.get(k) or "").strip().lstrip("@").lower() for k in ("channel", "handle", "channel_id")} - {""}
         allow = {x.strip().lstrip("@").lower() for x in os.environ.get("YTM_STRIP_CHANNELS", "Ten10sportslive-x6e").split(",") if x.strip()}
-        permitted = bool(ch) and ch in allow                 # source marks are removed ONLY for channels listed here (those that gave written permission)
+        permitted = bool(chs & allow)                 # source marks are removed ONLY for channels listed here (those that gave written permission)
         self.st["strip_permitted"] = permitted
         return self._popen(ffmpeg_cmd(hls, self.rtmp, strip, spec, permitted), stderr=self._elog)
 
@@ -1097,8 +1099,9 @@ class Relay:
             self.st["prep_err"] = _errtxt(e)
             log("prepare broadcast failed: %s" % self.st["prep_err"])
         self._cur_vid = c["video_id"]
-        self.proc = self._spawn(hls)
+        self.proc = self._spawn(hls, c)
         self.st["relay"] = {"video_id": c["video_id"], "title": c["title"], "channel": c["channel"],
+                            "handle": c.get("handle") or "", "channel_id": c.get("channel_id") or "",
                             "url": c["url"], "started": int(time.time()), "not_live_since": None, "yt_off": not outputs()[0]}
         if prep == "busy":
             self.st["relay"]["kick_early"] = True
@@ -1645,6 +1648,7 @@ def run2(_sleep=time.sleep, max_loops=None):
     det = Detector(st)
     relay.verify = det.is_live
     c = {"video_id": r2["video_id"], "title": r2.get("title") or "", "channel": r2.get("channel") or "",
+         "handle": r2.get("handle") or "", "channel_id": r2.get("channel_id") or "",
          "url": r2.get("url") or "https://www.youtube.com/watch?v=" + r2["video_id"]}
     t0 = time.time()
     deadline = t0 + MAX_RUN_MIN * 60
