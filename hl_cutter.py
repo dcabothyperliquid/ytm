@@ -198,8 +198,11 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
         te = min(ts + TOSS_SB_MAX, max(ts + 15.0, first - 10.0), dur * 0.25)
         toss_clips = [(ts, te)]                                     # toss banner + captains + decision, uninterrupted
         play_from = min(te, first - 6.0)
-        end_b = dur
-        end_a = max(play_from, sb["last_over_start"] - 25.0, dur - SB_END_MAX)   # the match-deciding over is shown complete, then win + celebration
+        lo_t = sb["last_over_start"]
+        real = [e for e in sb["events"] if e["t"] > lo_t - 2.0]
+        t_win = max([e["t_end"] for e in real] or [dur - SB_END_MAX])
+        end_a = min(dur, max(play_from + 30.0, t_win + 8.0))        # the match-deciding over ball by ball incl. the WINNING shot, then win + celebration
+        end_b = min(dur, end_a + 32.0)
         br_a, br_b = sb["break"]
         ev = [dict(e) for e in sb["events"] if play_from <= e["t"] < end_a]
         for e in ev:
@@ -225,13 +228,15 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
     for a, b in toss_clips:
         clips.append({"start": a, "end": b, "event": "toss", "must": True, "cost": b - a})
     for e in ev:
-        if e["kind"] == "dot":
+        if e["kind"] == "dot" and not (sb and e["t"] >= sb["last_over_start"] - 2.0 and e["t"] > sb["innings"][-1][0]):
             continue
         pa, pb = (PAD_SB if sb else PAD)[e["kind"]]
         if sb and not e.get("exact") and e["kind"] in ("six", "four", "wicket"):      # shot time only estimated from the banner (+-5 s): wider clip
             pa, pb = pa + 2.5, pb + 2.5
         c = {"start": max(0.0, e["t"] - pa), "end": min(end_a, e["t_end"] + pb), "event": e["kind"], "db": e["db"],
              "must": e["kind"] in MUST, "t": e["t"], "text": e["text"]}
+        if sb and e["t"] >= sb["last_over_start"] - 2.0 and e["t"] > sb["innings"][-1][0]:
+            c["lastover"] = True
         clips.append(c)
     if sb:
         allb = sorted([e for e in sb["events"] if play_from <= e["t"] < end_a], key=lambda e: e["t"])
@@ -284,7 +289,7 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
 
     def drop_where(pred, key, order=None, limit=None):
         limit = MAX_S if limit is None else limit
-        for c in sorted([c for c in clips if pred(c)], key=order or (lambda c: c.get("db", 0.0))):
+        for c in sorted([c for c in clips if pred(c) and not c.get("lastover")], key=order or (lambda c: c.get("db", 0.0))):
             if est(clips) <= limit:
                 return
             if c["event"] == "six" and sum(1 for x in clips if x["event"] == "six") <= MIN_SIX:
@@ -315,7 +320,7 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
     # FEAT_SIX sixes get their commentary finished (feat); the other sixes / fours are just the shot, ~7 s, no sentence snap.
     for kind, key in (("dot", "filler_dot"),):          # wides / no-balls ARE shown (ball only, ~4-5 s); dots are not
         n0 = len(clips)
-        clips[:] = [c for c in clips if c["event"] != kind]
+        clips[:] = [c for c in clips if c["event"] != kind or c.get("lastover")]
         dropped[key] += n0 - len(clips)
 
     def nballs():
@@ -328,7 +333,7 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
         return nballs() > MAX_CLIPS
 
     def drop_list(pred, key):
-        for c in sorted([c for c in clips if pred(c)], key=lambda c: (c.get("db", 0.0), c["start"])):
+        for c in sorted([c for c in clips if pred(c) and not c.get("lastover")], key=lambda c: (c.get("db", 0.0), c["start"])):
             if not over():
                 return
             if c["event"] == "six" and nsix() <= MIN_SIX:
@@ -344,7 +349,7 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
     def thin(max_keep):
         """cut every streak longer than max_keep down to its max_keep loudest balls (longest streak first, quietest ball first)"""
         for sid, cs in sorted(groups.items(), key=lambda kv: -len([c for c in kv[1] if c in clips])):
-            alive = [c for c in cs if c in clips]
+            alive = [c for c in cs if c in clips and not c.get("lastover")]
             for c in sorted(alive, key=lambda c: (c.get("db", 0.0), c["start"]))[:max(0, len(alive) - max_keep)]:
                 if not over():
                     return
@@ -361,7 +366,7 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None):
     thin(1)                           # last resort: 1 ball per streak (the streak is still shown)
     # featured = commentary finished to the end: every wicket + the FEAT_SIX loudest sixes + the replayed top sixes
     for c in clips:
-        if c["event"] in ("wicket", "toss", "finish") or c.get("replay"):
+        if c["event"] in ("wicket", "toss", "finish") or c.get("replay") or c.get("lastover"):
             c["feat"] = True
     for c in sorted([c for c in clips if c["event"] == "six"], key=lambda c: -c.get("db", 0.0))[:FEAT_SIX]:
         c["feat"] = True
