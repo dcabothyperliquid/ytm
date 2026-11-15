@@ -53,7 +53,7 @@ PLAY_RX = re.compile(r"\b(?:four|six|run|runs|over|ball|wicket|single)\b|चौ�
 PAD = {"wicket": (6, 11), "six": (6, 9), "four": (5, 6), "noball": (4, 5), "wide": (3, 4), "dot": (3, 4)}
 # scoreboard mode: events sit at the moment the ball was HIT (see hl_scoreboard.align_events), so the clip is
 # "bowler runs in -> shot -> commentary of that ball" and then it cuts to the next four / six / wicket:
-PAD_SB = {"wicket": (4.5, 4.5), "six": (3.5, 5), "four": (3.5, 4.5), "noball": (7, 2.5), "wide": (7, 2.5), "dot": (3, 2)}   # t = the exact SHOT (video cut-away, refine_shots): run-up 3.5 s before, then flight + landing (six 8.5 s, four 8 s, wicket 9.5 s)
+PAD_SB = {"wicket": (4.5, 4.5), "six": (3.5, 5), "four": (3.5, 4.5), "noball": (9, 1.5), "wide": (9, 1.5), "dot": (3, 2)}   # t = the exact SHOT (video cut-away, refine_shots): run-up 3.5 s before, then flight + landing (six 8.5 s, four 8 s, wicket 9.5 s)
 SIX_REPLAY = 10             # extra seconds after a TOP six (replay usually follows within ~10-25 s)
 TOP_SIXES = 1
 MUST = ("wicket", "six", "noball", "wide")
