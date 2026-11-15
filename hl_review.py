@@ -332,6 +332,8 @@ def apply_commands(H):
                 do_confirm(H, c)
             elif c["type"] == "fb_backfill":
                 do_fb_backfill(c)
+            elif c["type"] == "fix_captions":
+                do_fix_captions(c)
             elif c["type"] == "skip":
                 _scout_status(c["vid"], "skipped")
             elif c["type"] == "rescout":
@@ -614,6 +616,9 @@ def _set_ready_banner(m, it, yid):
 
 
 def _fb_texts(m, sid, it):
+    if sid == "highlight" and it.get("fb_caption"):                 # caption made for this highlight (teams / tournament), not the VOD title
+        t = ((it.get("yt_caption") or {}).get("title") or _hl_title(m))[:100]
+        return t, it["fb_caption"]
     if sid == "highlight":
         t = _hl_title(m)
     else:
@@ -801,6 +806,47 @@ def do_fb_backfill(c):
                     it["fb_error"] = "backfill"
                     it["fb_tries"] = 1
     save_state(mut, "hl fb backfill")
+
+
+def do_fix_captions(c):
+    """Re-apply the saved caption to posts that are already live: Facebook video (title + description) and, best effort, the YouTube video."""
+    vid, sid = (c.get("vid") or "").strip(), (c.get("sid") or "highlight").strip()
+    st, _ = load_state()
+    m = next((x for x in st["matches"] if x["vid"] == vid), None)
+    it = _item(st, vid, sid) if m else None
+    if not it:
+        raise RuntimeError("item nahi mila: %s/%s" % (vid, sid))
+    yc = it.get("yt_caption") or {}
+    res = {}
+    fb = it.get("fb_uploaded") or {}
+    page, tok = _fb_creds()
+    if fb.get("id") and page and tok:
+        try:
+            ft, fd = _fb_texts(m, sid, it)
+            j = _fb_call(["-X", "POST", "%s/%s" % (G_API, fb["id"]), "-F", "title=" + ft[:200], "-F", "description=" + fd[:5000],
+                          "-F", "access_token=" + tok], tok)
+            res["fb"] = "ok" if j.get("success") else "unexpected: %s" % json.dumps(j)[:120]
+        except Exception as e:                      # noqa
+            res["fb"] = "error: %s" % str(e)[:200]
+    yid = (it.get("uploaded") or {}).get("yid")
+    if yid and yc.get("title"):
+        try:
+            body = {"id": yid, "snippet": {"title": yc["title"][:100], "description": (yc.get("description") or "")[:4900],
+                                           "categoryId": "17", "tags": ["highlights", "live", "match"]}}
+            tk = _oauth_token()
+            r = sh(["curl", "-sS", "-X", "PUT", "https://www.googleapis.com/youtube/v3/videos?part=snippet",
+                    "-H", "Authorization: Bearer " + tk, "-H", "Content-Type: application/json", "-d", json.dumps(body)], check=False)
+            j = json.loads(r.stdout or "{}")
+            res["yt"] = "ok" if j.get("id") else "error: %s" % json.dumps(j.get("error", j))[:200].replace(tk, "***")
+        except Exception as e:                      # noqa
+            res["yt"] = "error: %s" % str(e)[:200]
+    log("fix_captions", vid, sid, res)
+
+    def mut(st2):
+        tgt = _item(st2, vid, sid)
+        if tgt is not None:
+            tgt["caption_fix"] = dict(res, at=int(time.time()))
+    save_state(mut, "hl caption fix")
 
 
 def pending_uploads():
