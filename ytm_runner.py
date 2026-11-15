@@ -854,7 +854,7 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False):
         boxes = "off"   # NO blur: top-right is covered by our big corner circle instead of delogo. (old box 1126:1:152:146) source top-right badge (Ten 10) removed with delogo, then our TRANSPARENT logo goes on top. YTM_DELOGO=off disables.
     # fallback when the probe finds no static logo (animated / flipping source logos change every frame):
     # big circle tucked into the top-right corner (slight bleed past the edge) so a corner badge stays hidden.
-    # permitted source (YTM_STRIP_CHANNELS allowlist): our logo sits centred on the source's round top-right logo (centre 1186,89),
+    # permitted source (YTM_STRIP_CHANNELS allowlist, empty by default): our logo sits centred on the source's round top-right logo (centre 1186,89),
     # whose pixels are removed first with a tight circle mask (no rectangle smear). Any other source: plain logo, nothing removed.
     pos = os.environ.get("YTM_LOGO_POS", "1101:39" if permitted else "W-w-4:22")
     lw = os.environ.get("YTM_LOGO_W", "170" if permitted else "150")
@@ -992,7 +992,7 @@ class Relay:
         self.st["fb_on"], self.st["yt_on"] = bool(_f), bool(_y)
         _rl = dict(cand or {}) or (self.st.get("relay") or {})     # fresh start: st["relay"] is not set yet when ffmpeg spawns -> use the candidate itself
         chs = {str(_rl.get(k) or "").strip().lstrip("@").lower() for k in ("channel", "handle", "channel_id")} - {""}
-        allow = {x.strip().lstrip("@").lower() for x in os.environ.get("YTM_STRIP_CHANNELS", "Ten10sportslive-x6e").split(",") if x.strip()}
+        allow = {x.strip().lstrip("@").lower() for x in os.environ.get("YTM_STRIP_CHANNELS", "").split(",") if x.strip()}
         permitted = bool(chs & allow)                 # source marks are removed ONLY for channels listed here (those that gave written permission)
         self.st["strip_permitted"] = permitted
         return self._popen(ffmpeg_cmd(hls, self.rtmp, strip, spec, permitted), stderr=self._elog)
