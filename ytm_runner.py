@@ -863,7 +863,7 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
     # other channels' logos/watermarks (permission-holder OK'd removal): REMOVED from the source picture with delogo (filled from the
     # surrounding pixels), before our tag/logo go on. Boxes (1280x720): bottom-left channel logo, right-edge watermark above the
     # scoreboard, bottom-right corner, two small icons either side of the bottom-centre mark. YTM_REMOVE="x:y:w:h;..." overrides, =off disables.
-    rm = os.environ.get("YTM_REMOVE", "").strip() or "1:695:150:24;1155:589:122:30;1130:695:148:24;470:578:48:36;764:578:48:36"
+    rm = os.environ.get("YTM_REMOVE", "").strip() or "1:695:150:24;1155:589:122:30;1130:695:148:24;470:578:48:36;764:578:48:36;508:576:256:38"
     if rm.lower() != "off":
         for bx in rm.split(";"):
             if re.fullmatch(r"\d{1,4}:\d{1,4}:\d{1,4}:\d{1,4}", bx.strip()):
