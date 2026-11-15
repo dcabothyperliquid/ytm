@@ -850,11 +850,11 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
     # YTM_LOGO_POS = overlay expr (default top-right), YTM_LOGO_W = logo width px (default 150).
     boxes = os.environ.get("YTM_DELOGO", "").strip()
     if not boxes:
-        boxes = "off"   # no smear box by default: it showed as an ugly blur patch beside our logo. Override e.g. YTM_DELOGO="1090:10:180:190" if a source logo peeks out.
+        boxes = "1126:1:152:146"   # source top-right badge (Ten 10) removed with delogo, then our TRANSPARENT logo goes on top. YTM_DELOGO=off disables.
     # fallback when the probe finds no static logo (animated / flipping source logos change every frame):
     # big circle tucked into the top-right corner (slight bleed past the edge) so a corner badge stays hidden.
-    pos = os.environ.get("YTM_LOGO_POS", "W-w+10:-8")
-    lw = os.environ.get("YTM_LOGO_W", "172")
+    pos = os.environ.get("YTM_LOGO_POS", "W-w-4:22")
+    lw = os.environ.get("YTM_LOGO_W", "150")
     chain = "[0:v]fps=30,scale=1280:720:flags=lanczos:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1"
     if boxes.lower() != "off":
         for bx in boxes.split(";"):
@@ -924,7 +924,7 @@ class Relay:
             strip = True if r is None else r
             self.st["mark_probe"] = {"watermark": r, "strip": strip, "at": int(time.time())}
         spec = None
-        if os.environ.get("YTM_LOGO_AUTO", "on").lower() != "off":
+        if os.environ.get("YTM_LOGO_AUTO", "off").lower() != "off":
             vid = (self.st.get("relay") or {}).get("video_id") or getattr(self, "_cur_vid", None)
             lp = self.st.get("logo_probe") or {}
             if vid and lp.get("video_id") == vid and lp.get("ver") == LOGO_PROBE_VER and "spec" in lp \
