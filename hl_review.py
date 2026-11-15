@@ -315,6 +315,32 @@ def do_confirm(H, c):
     _scout_status(c["vid"], "done")
 
 
+def do_delete(c):
+    """Dashboard 'Delete': remove the match from the dashboard state AND from GitHub storage (full release hl-*, preview release hlp-*,
+    trimmed-match cache hlsrc-* when no other match of this VOD is left). The scout entry stays (so the stream is never re-scouted by the watcher).
+    YouTube / Facebook posts that already went out are NOT touched."""
+    vid, mk = c["vid"], (c.get("match") or "")
+    st, _ = load_state()
+    m = next((x for x in st["matches"] if x["vid"] == vid and (x.get("match") or "") == mk), None)
+    sfx = key_sfx(mk)
+    for t in ("hl-" + vid + sfx, "hlp-" + vid + sfx):
+        sh(["gh", "release", "delete", t, "-R", repo(), "--cleanup-tag", "-y"], check=False)
+    for rid in ((m or {}).get("release_id"), (m or {}).get("prev_release_id")):
+        if rid:
+            sh(["gh", "api", "-X", "DELETE", "repos/%s/releases/%s" % (repo(), rid)], check=False)
+    left = [x for x in st["matches"] if x["vid"] == vid and (x.get("match") or "") != mk]
+    if not left:
+        r = sh(["gh", "api", "repos/%s/releases" % repo(), "--paginate", "-q",
+                '.[] | select(.tag_name|startswith("hlsrc-%s-")) | .tag_name' % vid], check=False)
+        for t in (r.stdout or "").split():
+            sh(["gh", "release", "delete", t, "-R", repo(), "--cleanup-tag", "-y"], check=False)
+
+    def mut(s2):
+        s2["matches"] = [x for x in s2["matches"] if not (x["vid"] == vid and (x.get("match") or "") == mk)]
+    save_state(mut, "hl delete %s" % vid)
+    log("deleted match", vid, mk or "")
+
+
 def apply_commands(H):
     n = 0
     cmds = pending_commands()
@@ -334,6 +360,8 @@ def apply_commands(H):
                 do_fb_backfill(c)
             elif c["type"] == "fix_captions":
                 do_fix_captions(c)
+            elif c["type"] == "delete":
+                do_delete(c)
             elif c["type"] == "skip":
                 _scout_status(c["vid"], "skipped")
             elif c["type"] == "rescout":
