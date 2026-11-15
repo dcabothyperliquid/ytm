@@ -40,7 +40,14 @@ LAYOUTS = [
     # C: North Goa Premier League final (2026-11-15): yellow bar in the 1st innings (blue digits), dark bar in the 2nd (yellow digits);
     #    "51-2  4.4(8)" sits left of the batters; A and B read 0 of 56 frames of that VOD -> commentary fallback -> 26 fake wickets, 19 min
     {"name": "C", "score": (0.186, 0.880, 0.256, 0.938), "overs": (0.262, 0.884, 0.312, 0.934), "auto": True},
+    # D: same NGPL final, FIRST ~4 BALLS of the innings (2026-11-15): the score sits in the white CENTRE panel "SHRU 11  4-0  0.2 (8)"
+    #    (the yellow left bar only shows the batters until the 4th ball). C read nothing there and A read it with the "0." cut off
+    #    (".3 (8)" -> 3 overs = 18 balls), so the first 4 balls were invisible and the highlight opened on the 5th ball.
+    #    strict: both texts must be a COMPLETE reading (digits-digit / d.d(d)) or the layout does not count.
+    {"name": "D", "score": (0.465, 0.890, 0.550, 0.955), "overs": (0.549, 0.905, 0.602, 0.945), "strict": True},
 ]
+RX_STRICT_SCORE = re.compile(r"^\d{1,3}-\d$")
+RX_STRICT_OVERS = re.compile(r"^\d{1,2}\.\d\(\d{1,2}\)$")
 _LAYOUT_HINT = [0]          # index of the layout that parsed last: tried first (saves 4 OCR calls per frame)
 
 # ------------------------------------------------------------------ text parsing (pure)
@@ -189,14 +196,27 @@ RX_BANNER = (("six", re.compile(r"\bS[1I]X(?:ES)?\b")),
 BANNER_BOX = (0.30, 0.885, 0.70, 0.975)          # centre of the bottom strip (fractions of the full frame)
 
 
+RX_BANNER_WORD = (("six", re.compile(r"S[1I]X(?:ES)?")), ("four", re.compile(r"F[O0]UR")), ("wicket", re.compile(r"W[1I]CKET")))
+
+
 def banner_kind(text):
     """the graphic is a STANDALONE word in the middle of the bar ("SIX", "WICKET"); the ticker also has "FOURS 1 SIXES 1" /
-    "NOT OUT" in longer text, so only a short text counts."""
+    "NOT OUT" in longer text, so only a short text counts.
+    NGPL final (2026-11-15): the graphic is the word repeated across the bar ("FOUR  FOUR  FOUR  F" = 15 letters, the old length
+    limit threw it away) or spaced out ("S I X"): a text that is ONLY the same keyword repeated (>= 2 times, <= 2 stray letters) counts."""
     t = norm(text)
-    if len(re.sub(r"[^A-Z0-9]", "", t)) > 11:
+    comp = re.sub(r"[^A-Z0-9]", "", t)
+    if len(comp) <= 11:
+        for k, rx in RX_BANNER:
+            if rx.search(t):
+                return k
+        for k, rx in RX_BANNER_WORD:                  # letters spaced out: "S I X"
+            if rx.fullmatch(comp):
+                return k
         return None
-    for k, rx in RX_BANNER:
-        if rx.search(t):
+    for k, rx in RX_BANNER_WORD:
+        n = len(rx.findall(comp))
+        if n >= 2 and len(rx.sub("", comp)) <= 2:
             return k
     return None
 
@@ -205,6 +225,25 @@ def read_banner(path):
     Image, _ = _pil()
     img = Image.open(path)
     return banner_kind(_ocr_img(_box(img, BANNER_BOX), psm=7, scale=3))
+
+
+def banner_present(path):
+    """OCR cannot reliably read the SIX / FOUR / WICKET graphic (white letters on a dark gradient: "S I X" came out as "SX", "CIY"),
+    but the graphic is unmistakable in the middle of the bar: it turns DARK (57-74 % of the pixels) with big WHITE letters (15-25 %),
+    while the normal bar is yellow / grey (dark ~14 %, white ~0 %). Measured on the NGPL final (2026-11-15), 6 of 6 graphics.
+    -> True when a graphic of ANY kind is on screen (the kind is known from the score change)."""
+    Image, _ = _pil()
+    try:
+        import numpy as np
+    except Exception:                                   # noqa
+        return False
+    img = Image.open(path)
+    c = np.asarray(_box(img, (0.43, 0.905, 0.57, 0.955)).convert("RGB")).astype(int)
+    if c.size == 0:
+        return False
+    white = float((c.min(axis=2) > 215).mean())
+    dark = float((c.mean(axis=2) < 110).mean())
+    return dark > 0.45 and 0.08 < white < 0.40
 
 
 def banner_onsets(frames):
@@ -351,8 +390,19 @@ def read_score(path):
     img = Image.open(path)
     order = list(range(len(LAYOUTS)))
     order.insert(0, order.pop(_LAYOUT_HINT[0] if _LAYOUT_HINT[0] < len(order) else 0))
+    strict_first = [i for i in order if LAYOUTS[i].get("strict")]        # a strict (complete-reading-only) layout can never be fooled: always try it first
+    order = strict_first + [i for i in order if i not in strict_first]
     for i in order:
         L = LAYOUTS[i]
+        if L.get("strict"):
+            sc = _ocr_img(_box(img, L["score"]), psm=7, whitelist="0123456789-", scale=4)
+            ov = _ocr_img(_box(img, L["overs"]), psm=7, whitelist="0123456789.()", scale=4)
+            if not (RX_STRICT_SCORE.match(sc.replace(" ", "")) and RX_STRICT_OVERS.match(ov.replace(" ", ""))):
+                continue
+            r = parse_score(sc, ov)
+            if r:
+                return r                     # D is not remembered as the hint: it only covers the first balls
+            continue
         if L.get("auto"):
             sc = _ocr_img(_box(img, L["score"]), psm=7, whitelist="0123456789-", scale=4, auto_invert=True)
             ov = _ocr_img(_box(img, L["overs"]), psm=7, whitelist="0123456789.()", scale=4, auto_invert=True)
@@ -369,6 +419,60 @@ def read_score(path):
 def _pmap(fn, items):
     with ThreadPoolExecutor(max_workers=WORKERS) as ex:
         return list(ex.map(fn, items))
+
+
+def fine_banner_scan(H, src, events, banners, step=1.0, back=30.0, fwd=4.0):
+    """The coarse scan (every BALL_STEP s) sees the SIX / FOUR / WICKET graphic only if a frame happens to fall inside the 3-4 s it
+    is on screen (2-over test of the NGPL final: 3 of 7 found). For every four / six / wicket without a graphic of its own kind near
+    its score change, look at [t_state-back, t_state+fwd] once per second. Appends (t, kind) to `banners`; -> number of events helped."""
+    onsets = banner_onsets(sorted(banners, key=lambda b: b[0]))
+    todo = []
+    for e in events:
+        if e["kind"] not in ("six", "four", "wicket"):
+            continue
+        ts = e["t_state"]
+        if any(k == e["kind"] and ts - back <= tb <= ts + fwd for tb, k in onsets):
+            continue
+        todo.append(e)
+    if not todo:
+        return 0
+    base = os.path.join(os.path.dirname(os.path.abspath(src)), "sb_fine")
+    shutil.rmtree(base, ignore_errors=True)
+    os.makedirs(base, exist_ok=True)
+    helped = [0]
+
+    def one(item):
+        idx, e = item
+        a = max(0.0, e["t_state"] - back)
+        b = e["t_state"] + fwd
+        d = os.path.join(base, "e%03d" % idx)
+        os.makedirs(d, exist_ok=True)
+        vf = "fps=1/%g,crop=iw:ih*%.3f:0:ih*%.3f" % (step, 1 - STRIP_Y0, STRIP_Y0)
+        r = _run(["ffmpeg", "-y", "-loglevel", "error", "-ss", "%.2f" % a, "-to", "%.2f" % b, "-i", src, "-an", "-sn", "-vf", vf,
+                  os.path.join(d, "f_%04d.png")])
+        got = []
+        for i, pth in enumerate(sorted(glob.glob(os.path.join(d, "f_*.png")))):
+            try:
+                k = read_banner(pth)
+            except Exception:                              # noqa
+                k = None
+            if k is None:
+                try:
+                    if banner_present(pth):                # a graphic is up that OCR cannot read: it is THIS event's (kind known from the score)
+                        k = e["kind"]
+                except Exception:                          # noqa
+                    pass
+            got.append((a + i * step, k if k == e["kind"] else None))
+        return idx, got
+
+    for idx, got in _pmap(one, list(enumerate(todo))):
+        hit = [(t, k) for t, k in got if k]
+        if hit:
+            banners.extend(hit)
+            helped[0] += 1
+    shutil.rmtree(base, ignore_errors=True)
+    H.log("scoreboard: fine banner scan found a graphic for %d of %d boundary / wicket events the coarse scan missed" % (helped[0], len(todo)))
+    return helped[0]
 
 
 # ------------------------------------------------------------------ one match window -> ball events
@@ -424,7 +528,11 @@ def analyze_window(H, src, dur):
     kinds = {}
     for e in events:
         kinds[e["kind"]] = kinds.get(e["kind"], 0) + 1
-    lag, n_al, n_add = align_events(events, banner_onsets(sorted(banners)), state_ts=[st["t"] for st in states])
+    try:
+        fine_banner_scan(H, src, events, banners)
+    except Exception as ex:                                  # noqa -- the coarse banners still work
+        H.log("fine banner scan failed:", ex)
+    lag, n_al, n_add = align_events(events, banner_onsets(sorted(banners, key=lambda b: b[0])), state_ts=[st["t"] for st in states])
     H.log("scoreboard: score->ball delay %.1fs (%d events matched to their SIX/FOUR/WICKET graphic, %d more found only by the graphic)" % (lag, n_al, n_add))
     kinds = {}
     for e in events:
