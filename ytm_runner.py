@@ -866,7 +866,8 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
     # Default: NO delogo boxes (they showed as blur patches on the ticker ends / under the timer / over the pitch once the source
     # watermarks were gone). The three bottom-centre boxes (ACL mark + side icons) are used only when the mark probe found a static
     # watermark there (strip=True). Old corner boxes: YTM_REMOVE="1:695:150:24;1155:589:122:30;1130:695:148:24" to bring them back.
-    rm = os.environ.get("YTM_REMOVE", "").strip() or ("470:578:48:36;764:578:48:36;508:576:256:38" if (strip and os.environ.get("YTM_MARK_DETECT", "off").lower() != "off") else "off")
+    rm = os.environ.get("YTM_REMOVE", "").strip() or ("1:695:150:24;1155:589:122:30;1130:695:148:24"   # Tensports etc. corner logos/watermarks: always removed
+          + (";470:578:48:36;764:578:48:36;508:576:256:38" if (strip and os.environ.get("YTM_MARK_DETECT", "off").lower() != "off") else ""))
     if rm.lower() != "off":
         for bx in rm.split(";"):
             if re.fullmatch(r"\d{1,4}:\d{1,4}:\d{1,4}:\d{1,4}", bx.strip()):
