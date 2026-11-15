@@ -878,6 +878,17 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
                   "shadowcolor=black@0.6:shadowx=2:shadowy=2" % (cx, bw, cy, bh, bw, bh, font, tag, cx, cy))
     elif strip and boxes.lower() != "off":
         chain += ",delogo=x=521:y=556:w=250:h=64"
+    # other channels' corner marks (permission-holder OK'd removal): small opaque branded patches. Default boxes = the usual
+    # bottom-left channel logo, a right-edge watermark just above the scoreboard and the bottom-right corner.
+    # YTM_PATCHES="x:y:w:h;x:y:w:h" (1280x720 frame) overrides, YTM_PATCHES=off disables.
+    pt = os.environ.get("YTM_PATCHES", "").strip() or "0:696:150:24;1150:592:130:26;1130:696:150:24"
+    if pt.lower() != "off" and os.path.isfile(font):
+        for bx in pt.split(";"):
+            if re.fullmatch(r"\d{1,4}:\d{1,4}:\d{1,4}:\d{1,4}", bx.strip()):
+                px, py, pw, ph = bx.strip().split(":")
+                chain += (",drawbox=x=%s:y=%s:w=%s:h=%s:color=0x0b3d91:t=fill"
+                          ",drawtext=fontfile=%s:text='LML':fontcolor=white:fontsize=%d:x=%s+(%s-text_w)/2:y=%s+(%s-text_h)/2"
+                          % (px, py, pw, ph, font, max(10, int(ph) - 10), px, pw, py, ph))
     if logo_spec:                                                 # auto-sized to the detected source logo
         lw, pos = str(int(logo_spec["w"])), "%d:%d" % (int(logo_spec["x"]), int(logo_spec["y"]))
     fc = chain + "[bg];[1:v]scale=%s:-1[lg];[bg][lg]overlay=%s,split=2[v][s];[s]fps=1/20,scale=640:-1[snap]" % (lw, pos)
