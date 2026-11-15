@@ -854,7 +854,7 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
     # fallback when the probe finds no static logo (animated / flipping source logos change every frame):
     # big circle tucked into the top-right corner (slight bleed past the edge) so a corner badge stays hidden.
     pos = os.environ.get("YTM_LOGO_POS", "W-w+10:-8")
-    lw = os.environ.get("YTM_LOGO_W", "140")
+    lw = os.environ.get("YTM_LOGO_W", "172")
     chain = "[0:v]fps=30,scale=1280:720:flags=lanczos:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1"
     if boxes.lower() != "off":
         for bx in boxes.split(";"):
@@ -867,7 +867,7 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
     # watermarks were gone). The three bottom-centre boxes (ACL mark + side icons) are used only when the mark probe found a static
     # watermark there (strip=True). Old corner boxes: YTM_REMOVE="1:695:150:24;1155:589:122:30;1130:695:148:24" to bring them back.
     rm = os.environ.get("YTM_REMOVE", "").strip() or ("1:695:150:24;1155:589:122:30;1130:695:148:24"   # Tensports etc. corner logos/watermarks: always removed
-          + (";470:578:48:36;764:578:48:36;508:576:256:38" if (strip and os.environ.get("YTM_MARK_DETECT", "on").lower() != "off") else ""))
+          + (";470:578:48:36;764:578:48:36;508:576:256:38" if (strip and os.environ.get("YTM_MARK_DETECT", "off").lower() != "off") else ""))
     if rm.lower() != "off":
         for bx in rm.split(";"):
             if re.fullmatch(r"\d{1,4}:\d{1,4}:\d{1,4}:\d{1,4}", bx.strip()):
@@ -920,7 +920,7 @@ class Relay:
         self._elog = open("/tmp/ffmpeg.log", "wb")
         self._last_t, self._last_t_at = None, time.time()
         strip = True
-        if os.environ.get("YTM_MARK_DETECT", "on").lower() != "off":
+        if os.environ.get("YTM_MARK_DETECT", "off").lower() != "off":
             r = mark_present(hls)
             strip = True if r is None else r
             self.st["mark_probe"] = {"watermark": r, "strip": strip, "at": int(time.time())}
