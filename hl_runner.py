@@ -986,6 +986,13 @@ def _cmd_run():
             hl_review.do_confirm(sys.modules[__name__], {"vid": vid, "start": e["start"], "end": e["end"]})
             hl_review.set_live("done", "Highlights ready (match %s) - dashboard me Approve karo" % want, vid=vid, force=True)
             return
+        auto_run = not os.environ.get("HL_VIDEO", "").strip() and hl_review.load_cfg().get("auto", True)
+        if auto_run and not want and e["status"] == "pending" and e.get("last_over") is True and e.get("start") is not None and e.get("end"):
+            # AUTO mode (Naem 2026-11-15): a match that ended in the LAST over is made without waiting for Confirm; every other match is skipped / left to hand
+            note("auto: last-over finish (%s) -> making highlights now (%s - %s)" % (e.get("overs_at_end"), fmt(e["start"]), fmt(e["end"])))
+            hl_review.do_confirm(sys.modules[__name__], {"vid": vid, "start": e["start"], "end": e["end"]})
+            hl_review.set_live("done", "Highlights ready (last over thriller) - dashboard me Approve karo", vid=vid, force=True)
+            return
         hl_review.set_live("done", "Match mila (%s - %s) — dashboard me check karke Confirm karo" % (fmt(e["start"] or 0), fmt(e["end"] or 0))
                            if e["status"] == "pending" else "Scout: %s" % e["reason"], vid=vid, force=True)
         return
