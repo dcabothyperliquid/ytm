@@ -43,6 +43,8 @@ RX = {
     "wide": re.compile(r"\bwide\b|वाइड|वाईड", re.I),
     "dot": re.compile(r"dot[\s-]?ball|no run|कोई रन नहीं|डॉट|डाट|\bdot\b", re.I),
 }
+# talk ABOUT wickets (bowling figures, score recaps, "not out"), not a wicket falling: 26 fake wickets made a 19 min reel on 2026-11-15
+NOT_WICKET_RX = re.compile(r"not[\s-]?out|नॉट[\s-]?आउट|loss\s+of|\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+wickets?\b|wickets?\s+(?:down|in\s+hand|in\s+hands|left|remaining|to\s+fall)|down\s+the\s+wicket|wicket[\s-]?keep|विकेट\s*कीप|\bwicket\s+taker|वाइड|\bwide\b", re.I)
 NEED_RX = re.compile(r"need(?:s|ed)?\s+\w+\s+(?:runs?|from)|require|चाहिए|चाहिये|target|टारगेट|required", re.I)
 TOSS_RX = re.compile(r"\btoss\b|टॉस|won\s+the\s+toss|elected|chose\s+to", re.I)
 DECIDE_RX = re.compile(r"elected|chose\s+to|decid|bat\s+first|bowl\s+first|field\s+first|बल्लेबाज़ी|बल्लेबाजी|बैटिंग|गेंदबाज़ी|गेंदबाजी|बॉलिंग|फील्डिंग", re.I)
@@ -70,8 +72,8 @@ SB_END_MAX = float(os.environ.get("HL_END_MAX", "40"))   # scoreboard mode: the 
 # LENGTH BUDGET (decided 2026-11-14 by Naem: 6-8 min highlight, "jyada lamba sahi nahi hota"):
 #   wickets / no-balls / toss / finish are NEVER dropped; 3+ consecutive boundaries (hat-trick of six / four) are never dropped;
 #   everything else is trimmed until the ESTIMATED final length (after replay cut + sentence snap) is <= HL_MAX_S.
-MAX_S = float(os.environ.get("HL_MAX_S", "400"))           # estimated final seconds -> real result lands in 6-8 min
-HARD_S = float(os.environ.get("HL_HARD_S", "420"))         # est. seconds above which streaks are thinned below a hat-trick (6-8 min promise)
+MAX_S = float(os.environ.get("HL_MAX_S", "540"))           # estimated final seconds -> real result lands in ~9-10 min (2026-11-15: 6-8 min felt short for a final, 19 min was far too long)
+HARD_S = float(os.environ.get("HL_HARD_S", "570"))         # est. seconds above which streaks are thinned below a hat-trick
 MAX_CLIPS = int(os.environ.get("HL_MAX_CLIPS", "47"))        # ball clips (wickets + sixes + fours) in the highlight
 FEAT_SIX = int(os.environ.get("HL_FEAT_SIX", "5"))          # sixes that get their commentary finished (the rest: shot only)
 MIN_SIX = int(os.environ.get("HL_MIN_SIX", "30"))         # Naem: "20+ six to lena hi hoga" -> sixes are only dropped down to this many (loudest kept)
@@ -107,10 +109,12 @@ def transcribe_full(H, wav, dur, progress=None):
 def classify_segment(text):
     """-> event name or None. Priority: six > wicket > noball > wide > four > dot."""
     t = text or ""
+    if re.search(r"loss\s+of", t, re.I):                 # "83 for the loss of four wickets" = score talk, not an event
+        return None
     need = bool(NEED_RX.search(t))
     if RX["six"].search(t) and not need:
         return "six"
-    if RX["wicket"].search(t):
+    if RX["wicket"].search(t) and not NOT_WICKET_RX.search(t):
         return "wicket"
     if RX["noball"].search(t):
         return "noball"

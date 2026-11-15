@@ -27,7 +27,7 @@ SCAN_STEP = int(os.environ.get("HL_SCAN_STEP", "30"))       # s between frames w
 BALL_STEP = int(os.environ.get("HL_BALL_STEP", "4"))        # s between frames when reading the score inside one match
 WORKERS = max(2, min(6, (os.cpu_count() or 4)))
 RESULT_TAIL = 45.0            # s of celebration kept after the "WON BY" banner first shows (normal match)
-FINAL_TAIL = 600.0            # final: keep the trophy lift too
+FINAL_TAIL = 60.0             # final: winning run + short celebration (the cup ceremony is not part of the highlight)
 TOSS_BACK = 35.0              # s before the toss banner (captain / commentator talk starts earlier)
 MIN_PLAY_FRAMES = 12          # a match needs at least this many scoreboard frames before a result counts (~4 min at 20 s)
 
@@ -37,7 +37,11 @@ STRIP_Y0 = 0.80
 LAYOUTS = [
     {"name": "A", "score": (0.445, 0.888, 0.559, 0.947), "overs": (0.564, 0.888, 0.625, 0.947)},
     {"name": "B", "score": (0.176, 0.886, 0.289, 0.942), "overs": (0.326, 0.886, 0.377, 0.942)},
+    # C: North Goa Premier League final (2026-11-15): yellow bar in the 1st innings (blue digits), dark bar in the 2nd (yellow digits);
+    #    "51-2  4.4(8)" sits left of the batters; A and B read 0 of 56 frames of that VOD -> commentary fallback -> 26 fake wickets, 19 min
+    {"name": "C", "score": (0.186, 0.880, 0.256, 0.938), "overs": (0.262, 0.884, 0.312, 0.934), "auto": True},
 ]
+_LAYOUT_HINT = [0]          # index of the layout that parsed last: tried first (saves 4 OCR calls per frame)
 
 # ------------------------------------------------------------------ text parsing (pure)
 RX_TOSS = re.compile(r"T[O0]SS")
@@ -296,11 +300,14 @@ def sample_frames(video, t0, t1, step, outdir, strip=True):
     return [(t0 + i * step, p) for i, p in enumerate(files)]
 
 
-def _ocr_img(img, psm=6, whitelist=None, scale=3, invert=False):
+def _ocr_img(img, psm=6, whitelist=None, scale=3, invert=False, auto_invert=False):
     Image, ImageOps = _pil()
     g = img.convert("L")
     g = g.resize((g.width * scale, g.height * scale), Image.LANCZOS)
     g = ImageOps.autocontrast(g)
+    if auto_invert:                                  # dark bar + light digits -> make it dark digits on a light bar
+        px = list(g.resize((16, 4)).getdata())
+        invert = (sum(px) / float(len(px))) < 120
     if invert:
         g = ImageOps.invert(g)
     fd, p = tempfile.mkstemp(suffix=".png")
@@ -338,11 +345,19 @@ def read_score(path):
     """-> (runs, wk, balls, mx) from whichever layout parses, else None."""
     Image, _ = _pil()
     img = Image.open(path)
-    for L in LAYOUTS:
-        sc = _ocr_img(_box(img, L["score"]), psm=7, whitelist="0123456789-", scale=4)
-        ov = _ocr_img(_box(img, L["overs"]), psm=7, whitelist="0123456789.()", scale=4, invert=True)
+    order = list(range(len(LAYOUTS)))
+    order.insert(0, order.pop(_LAYOUT_HINT[0] if _LAYOUT_HINT[0] < len(order) else 0))
+    for i in order:
+        L = LAYOUTS[i]
+        if L.get("auto"):
+            sc = _ocr_img(_box(img, L["score"]), psm=7, whitelist="0123456789-", scale=4, auto_invert=True)
+            ov = _ocr_img(_box(img, L["overs"]), psm=7, whitelist="0123456789.()", scale=4, auto_invert=True)
+        else:
+            sc = _ocr_img(_box(img, L["score"]), psm=7, whitelist="0123456789-", scale=4)
+            ov = _ocr_img(_box(img, L["overs"]), psm=7, whitelist="0123456789.()", scale=4, invert=True)
         r = parse_score(sc, ov)
         if r:
+            _LAYOUT_HINT[0] = i
             return r
     return None
 

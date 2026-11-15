@@ -29,8 +29,10 @@ PLAY_AFTER_TOSS = 30 * 60   # a toss only starts a match if live play follows wi
 MIN_PLAY_FRAMES = 8     # ~2 min of live scoreboard after the toss
 LEAD_IN = 20.0          # s before the first toss frame
 CELEBRATION = 45.0      # s after the first result banner (winning run + a short celebration; Naem: 3 min extra at the end was too long)
-FINAL_TAIL = 600.0      # a FINAL keeps the trophy / cup lift too
+FINAL_TAIL = 60.0       # a FINAL: winning run + short celebration only (600 s of trophy ceremony made a 19 min highlight with 4-5 min of nothing at the end)
 BOARD_H = int(os.environ.get("HL_BOARD_H", "480") or 480)   # 360p was too blurry for the small banner text
+BACK_GAP = 480.0        # walking back from the toss: live-play frames this close (s) still belong to the same match
+BACK_MAX = 60 * 60.0    # ... but never further back than this from the toss frame
 TOSS_PENDING_MAX = 360  # if "TOSS PENDING" sits longer than this before "won the toss", start 60 s before the won-toss frame
 
 TOSS_RX = re.compile(r"\bT[O0]SS\b", re.I)
@@ -102,6 +104,28 @@ NEW_MATCH_MIN_GAP = 35 * 60      # a new match starts at least this long after t
 NEW_MATCH_PLAY = 100             # ... and has this many live-scoreboard frames (15 s each, ~25 min) in the 40 min after its toss
 
 
+def _play_run_start(rows, t_ref, floor=0.0, gap=BACK_GAP, max_back=BACK_MAX):
+    """Earliest t of the unbroken run of live-scoreboard ("play") frames that ends at t_ref (walk backwards).
+    Stops at a hole bigger than `gap`, at a result banner, at `floor` or at `max_back`. None = no play frames right before t_ref.
+    Why: the "TOSS" text can show up on the strip only some overs AFTER the real start (ticker / late banner) -> the first ball is earlier."""
+    first, last = None, t_ref
+    for t, f, _ in sorted((r for r in rows if r[0] < t_ref), key=lambda r: -r[0]):
+        if t <= floor or t < t_ref - max_back or f["result"]:
+            break
+        if f["play"]:
+            if last - t > gap:
+                break
+            first, last = t, t
+        elif last - t > gap:
+            break
+    return first
+
+
+def _floor(rows, t_first, t_prev=0.0):
+    """Nothing of THIS match can be before the previous result banner / the previous toss block."""
+    return max([t for t, f, _ in rows if f["result"] and t < t_first] + [t_prev, 0.0])
+
+
 def _long_new_match(rows, prev, b):
     """Neither a result banner nor a team change was read between two toss blocks (OCR misses on some broadcasts).
     Still a NEW match when the previous one clearly had a 2nd innings (chase banners) and a long live stretch follows this toss -
@@ -144,7 +168,8 @@ def segment(rows, dur, title="", last=False, debug=None):
     out = []
     for i, b in enumerate(valid):
         limit = valid[i + 1][0] if i + 1 < len(valid) else dur
-        out.append(_one_match(rows, b[0], b[1], b[2], limit, dur, toss_seen=True, title=title))
+        out.append(_one_match(rows, b[0], b[1], b[2], limit, dur, toss_seen=True, title=title,
+                              floor=_floor(rows, b[0], valid[i - 1][1] if i else 0.0)))
     # a result before the first toss block = the VOD began in the middle of a match (no toss in the VOD)
     first_lim = valid[0][0] if valid else dur
     early = [r for r in rows if r[0] < first_lim and r[1]["result"]]
@@ -185,7 +210,13 @@ def _last_match(rows, dur, title="", debug=None):
         debug.append("toss blocks: " + ", ".join("%s-%s%s" % (fmt(b[0]), fmt(b[1]), "*" if b[2] is not None else "") for b in blocks))
         debug.append("candidates for the last match: " + ", ".join(fmt(b[0]) for b in cands))
     if not cands:
-        return None
+        # toss text never read: the match still has a first ball -> start from the unbroken live-scoreboard run that ends at the result
+        t0 = _play_run_start(rows, t_res, clusters[-2][-1] if len(clusters) > 1 else 0.0, gap=900.0, max_back=4 * 3600.0)
+        if t0 is None or t_res - t0 < 25 * 60:
+            return None
+        m = _one_match(rows, t0, t0, None, dur, dur, toss_seen=False, title=title)
+        m["last_pick"] = True
+        return m
     no_f, codes_f = _ident(rows, t_res - IDENT_WINDOW, t_res)
     pick = cands[-1]
     if len(codes_f) >= 2 or no_f:
@@ -203,7 +234,7 @@ def _last_match(rows, dur, title="", debug=None):
             pick = same[-1]                      # earliest block of the unbroken run that shows the final's teams
         if debug is not None:
             debug.append("final's teams %s / match no %s -> start block %s" % (sorted(codes_f), no_f, fmt(pick[0])))
-    m = _one_match(rows, pick[0], pick[1], pick[2], dur, dur, toss_seen=True, title=title)
+    m = _one_match(rows, pick[0], pick[1], pick[2], dur, dur, toss_seen=True, title=title, floor=_floor(rows, pick[0]))
     m["last_pick"] = True
     return m
 
@@ -226,9 +257,16 @@ def _last_over_finish(rows, t_res, text_res=""):
     return ov >= mx - 1, "%d.%d/%d" % (ov, ball, mx)
 
 
-def _one_match(rows, t_first, t_last, t_done, limit, dur, toss_seen, title=""):
+def _one_match(rows, t_first, t_last, t_done, limit, dur, toss_seen, title="", floor=0.0):
     if toss_seen:
         ref = t_done - 60.0 if (t_done is not None and t_done - t_first > TOSS_PENDING_MAX) else t_first
+        early = _play_run_start(rows, t_first, floor)
+        if early is not None and early < ref:
+            no_a, tm_a = _ident(rows, early, t_first)
+            no_b, tm_b = _ident(rows, t_first, t_first + IDENT_WINDOW)
+            other = (no_a and no_b and no_a != no_b) or (len(tm_a) >= 2 and len(tm_b) >= 2 and not (tm_a & tm_b))
+            if not other:
+                ref = early                       # play was already on screen before the toss text: start at the first ball
         start = max(0.0, ref - LEAD_IN)
     else:
         start = max(0.0, t_first - LEAD_IN)
