@@ -697,7 +697,7 @@ def mark_present(hls):
         return None
 
 
-LOGO_PROBE_VER = 6          # bump when sizing logic changes: cached per-match specs from older logic are re-probed
+LOGO_PROBE_VER = 7          # bump when sizing logic changes: cached per-match specs from older logic are re-probed
 
 
 def logo_probe(hls):
@@ -786,7 +786,7 @@ def logo_probe(hls):
             d = math.hypot(bw, bh)                        # wide / square source: circle through the box corners covers it all
         else:
             d = max(bw, bh) * 1.08 + 4                    # round-ish source: small safety margin (no tiny edge peeking)
-        w = int(min(float(os.environ.get("YTM_LOGO_MAX", "260")), max(float(os.environ.get("YTM_LOGO_MIN", "135")), d * float(os.environ.get("YTM_LOGO_SCALE", "1.3")))))   # a bit bigger than the bare cover size (YTM_LOGO_SCALE) and never below YTM_LOGO_MIN
+        w = int(min(float(os.environ.get("YTM_LOGO_MAX", "260")), max(float(os.environ.get("YTM_LOGO_MIN", "170")), d * float(os.environ.get("YTM_LOGO_SCALE", "1.6")))))   # a bit bigger than the bare cover size (YTM_LOGO_SCALE) and never below YTM_LOGO_MIN
         h = w
         bleed = int(w * 0.12)                             # a circle fully inside the frame can't cover a badge hugging the corner -> allow a small bleed past the edge
         x = int(min(1280 - w + bleed, max(-bleed, cx - w / 2.0)))
@@ -844,7 +844,7 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False):
     yt, fb = outputs()
     base = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-stats", "-reconnect", "1", "-reconnect_streamed", "1",
             "-reconnect_delay_max", "5", "-fflags", "+genpts", "-i", hls]
-    logo = os.environ.get("YTM_LOGO", "logo.png")
+    logo = os.environ.get("YTM_LOGO", "lml_circle.png" if os.path.isfile("lml_circle.png") else "logo.png")      # opaque round logo (make_lml_circle.py); falls back to the transparent wordmark
     if not os.path.isfile(logo):
         if fb and yt:
             return base + ["-map", "0:v?", "-map", "0:a?", "-c", "copy", "-tag:a", "10", "-f", "tee", _tee(rtmp, fb)]
@@ -860,7 +860,7 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False):
     # permitted source: our logo sits centred on the source's round top-right logo (centre 1186,89),
     # whose pixels are removed first with a tight circle mask (no rectangle smear). Any other source: plain logo, nothing removed.
     pos = os.environ.get("YTM_LOGO_POS", "1101:39" if permitted else "W-w-4:22")
-    lw = os.environ.get("YTM_LOGO_W", "170" if permitted else "150")
+    lw = os.environ.get("YTM_LOGO_W", "170" if permitted else "175")
     chain = "[0:v]fps=30,scale=1280:720:flags=lanczos:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1"
     if boxes.lower() != "off":
         for bx in boxes.split(";"):
