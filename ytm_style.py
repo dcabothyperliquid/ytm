@@ -268,7 +268,7 @@ def _slant_box(draw, x0, y0, x1, y1, col, skew=34):
     draw.polygon([(x0 + skew, y0), (x1, y0), (x1 - skew, y1), (x0, y1)], fill=col)
 
 
-def make_banner(frame, src, out, channel="", logo=None):
+def make_banner(frame, src, out, channel="", logo=None, badge="LIVE", strip="LIVE ON:"):
     """frame = path of a stream snapshot (or None -> plain dark gradient). Returns out path."""
     from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
     p = parse_match(src, channel)
@@ -355,8 +355,8 @@ def make_banner(frame, src, out, channel="", logo=None):
     sy0 = 600
     d.rectangle([0, sy0, W, H], fill=(8, 12, 30, 245))
     d.rectangle([0, sy0, W, sy0 + 6], fill=(255, 214, 10, 255))
-    d.text((220, (sy0 + H) // 2 + 4), "LIVE ON:", font=_font(54), fill=(255, 255, 255), anchor="lm")
-    d.text((220 + d.textlength("LIVE ON:", font=_font(54)) + 22, (sy0 + H) // 2 + 4), BRAND.upper(), font=_font(66),
+    d.text((220, (sy0 + H) // 2 + 4), strip, font=_font(54), fill=(255, 255, 255), anchor="lm")
+    d.text((220 + d.textlength(strip, font=_font(54)) + 22, (sy0 + H) // 2 + 4), BRAND.upper(), font=_font(66),
            fill=(255, 214, 10), anchor="lm")
     sf2 = _font(34)
     sw = d.textlength("SUBSCRIBE", font=sf2)
@@ -378,9 +378,10 @@ def make_banner(frame, src, out, channel="", logo=None):
             pass
     d = ImageDraw.Draw(img)
     # LIVE badge (top-left)
-    d.rounded_rectangle([26, 20, 200, 80], radius=14, fill=(220, 38, 38, 255))
+    bw = d.textlength(badge, font=_font(36))
+    d.rounded_rectangle([26, 20, 26 + bw + 90, 80], radius=14, fill=(220, 38, 38, 255))
     d.ellipse([42, 39, 62, 59], fill=(255, 255, 255, 255))
-    d.text((78, 50), "LIVE", font=_font(36), fill=(255, 255, 255), anchor="lm")
+    d.text((78, 50), badge, font=_font(36), fill=(255, 255, 255), anchor="lm")
 
     rgb = img.convert("RGB")
     q = 90

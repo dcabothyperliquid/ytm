@@ -520,6 +520,37 @@ def _hl_title(m):
         return old
 
 
+def _hl_thumb(path, yid, m, it):
+    """Highlights thumbnail: frame of the best moment in the cut (first six, else wicket, last over, else the middle)
+    + the same banner style (HIGHLIGHTS badge). Best effort: any failure is only logged. Needs a phone-verified channel."""
+    if os.environ.get("YTM_STYLE", "on").lower() == "off" or os.environ.get("YTM_BANNER", "on").lower() == "off":
+        return
+    try:
+        import urllib.request
+        import ytm_style
+        ch = it.get("chapters") or []
+        pick = None
+        for want in (("six", "sixes"), ("wicket", "wickets"), ("hattrick",), ("finish",), ("catch",)):
+            pick = next((t for t, ev in ch if ev in want), None)
+            if pick is not None:
+                break
+        t = (pick + 3) if pick is not None else max(3, (it.get("dur") or 120) // 2)
+        frame, out = "/tmp/hlthumb_frame.jpg", "/tmp/hlthumb.jpg"
+        sh(["ffmpeg", "-y", "-loglevel", "error", "-ss", str(t), "-i", path, "-frames:v", "1", "-q:v", "2", frame], check=False)
+        ytm_style.make_banner(frame if os.path.isfile(frame) else None, m["title"], out, badge="HIGHLIGHTS", strip="WATCH ON:")
+        req = urllib.request.Request("https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=%s&uploadType=media" % yid,
+                                     data=open(out, "rb").read(), method="POST",
+                                     headers={"Authorization": "Bearer " + _oauth_token(), "Content-Type": "image/jpeg"})
+        urllib.request.urlopen(req, timeout=40).read()
+        log("highlight thumbnail set", yid)
+    except Exception as e:                          # noqa
+        log("highlight thumbnail failed (custom thumbnails need a phone-verified channel):", str(e)[:160])
+    finally:
+        for f in ("/tmp/hlthumb_frame.jpg", "/tmp/hlthumb.jpg"):
+            if os.path.exists(f):
+                os.remove(f)
+
+
 def _fb_texts(m, sid, it):
     if sid == "highlight":
         t = _hl_title(m)
@@ -570,6 +601,8 @@ def upload_approved():
             if tg != "fb":
                 yid = _youtube_upload(path, title, desc, privacy, tags)
                 log("uploaded", sid, "->", yid)
+                if sid == "highlight":
+                    _hl_thumb(path, yid, m, it)
             fb_rec, fb_err = None, None
             if tg != "yt" and fb_on:                    # Facebook is best-effort: never breaks the YouTube result
                 ft, fd = _fb_texts(m, sid, it)
