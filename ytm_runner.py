@@ -840,7 +840,119 @@ def _tee(rtmp, fb):
     return "[f=flv]%s|[f=flv:onfail=ignore]%s" % (rtmp, fb)
 
 
-def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False):
+WM_PROBE_VER = 1
+WM_ASPECT = 76 / 660.0       # lml_badge.png is 660x76: the badge keeps this aspect when it is auto-sized
+
+
+def wm_probe(hls):
+    """Find the SOURCE's static watermark at the centre-bottom of the frame and decide where / how big OUR badge goes.
+    Same idea as logo_probe: 5 frames (1.5 s apart) of the centre-bottom strip (1280x720 frame coords), keep pixels that are
+    sharp-edged AND unchanged between frames (= a static overlay, not moving players), group them into blobs, take the biggest
+    that sits near the horizontal centre. Blobs that touch the strip border, are absurdly big/small or sit off-centre are
+    background / scoreboard, not a watermark. The badge keeps its aspect, is at least YTM_WM_MIN wide (default 330 = the old
+    fixed size), at most YTM_WM_MAX (540), centred on the blob and kept above the scoreboard.
+    -> dict(x, y, w, h) in 1280x720 coords, or None (nothing reliable -> caller keeps the fixed default box)."""
+    X0, Y0, CW, CH, CELL = 360, 536, 560, 104, 8
+    gw, gh = CW // CELL, CH // CELL
+    try:
+        vf = ("fps=0.67,scale=1280:720:flags=bilinear:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,"
+              "crop=%d:%d:%d:%d,format=gray" % (CW, CH, X0, Y0))
+        p = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", hls, "-an", "-vf", vf,
+                            "-frames:v", "5", "-f", "rawvideo", "-"], capture_output=True, timeout=45)
+        n = CW * CH
+        fr = [p.stdout[i * n:(i + 1) * n] for i in range(len(p.stdout) // n)]
+        if len(fr) < 4:
+            log("wm probe: only %d frame(s) -> default badge" % len(fr))
+            return None
+        k = len(fr)
+        mean = [sum(f[i] for f in fr) / k for i in range(n)]
+        stat_t = float(os.environ.get("YTM_WM_STATIC", "12"))
+        es = [0.0] * n
+        for y in range(CH - 1):
+            row = y * CW
+            for x in range(CW - 1):
+                i = row + x
+                e = abs(mean[i + 1] - mean[i]) + abs(mean[i + CW] - mean[i])
+                if e >= 24 and max(abs(f[i] - mean[i]) for f in fr) <= stat_t:
+                    es[i] = e
+
+        def blob(edge_t, min_cnt):
+            cnt = [0] * (gw * gh)
+            for i in range(n):
+                if es[i] >= edge_t:
+                    cnt[((i // CW) // CELL) * gw + min((i % CW) // CELL, gw - 1)] += 1
+            act = {c for c, v in enumerate(cnt) if v >= min_cnt}
+            best, seen = None, set()
+            for c0 in act:
+                if c0 in seen:
+                    continue
+                comp, stack = [], [c0]
+                seen.add(c0)
+                while stack:
+                    c = stack.pop()
+                    comp.append(c)
+                    for dx in (-1, 0, 1):
+                        for dy in (-1, 0, 1):
+                            nx, ny = c % gw + dx, c // gw + dy
+                            nc = ny * gw + nx
+                            if 0 <= nx < gw and 0 <= ny < gh and nc in act and nc not in seen:
+                                seen.add(nc)
+                                stack.append(nc)
+                tot = sum(cnt[c] for c in comp)
+                if len(comp) >= 6 and (best is None or tot > best[0]):
+                    best = (tot, comp)
+            return best
+
+        pick = None
+        for edge_t, min_cnt in ((90, 12), (60, 12), (40, 10), (24, 8)):
+            best = blob(edge_t, min_cnt)
+            if not best:
+                continue
+            xs, ys = [c % gw for c in best[1]], [c // gw for c in best[1]]
+            bw, bh = (max(xs) - min(xs) + 1) * CELL, (max(ys) - min(ys) + 1) * CELL
+            cx = X0 + (min(xs) + max(xs) + 1) * CELL / 2.0
+            cy = Y0 + (min(ys) + max(ys) + 1) * CELL / 2.0
+            if min(xs) == 0 or max(xs) == gw - 1 or max(ys) == gh - 1 or bw > 520 or bw < 56 or bh > 72 or bh < 12:
+                continue                                 # touches the strip border / absurd size = background or scoreboard
+            if abs(cx - 640) > float(os.environ.get("YTM_WM_CENTER_TOL", "110")) or not (556 <= cy <= 628):
+                continue                                 # not a centred watermark
+            pick = (bw, bh, cx, cy, set(best[1]))
+            break
+        if not pick:
+            log("wm probe: no reliable static watermark -> default badge")
+            return None
+        bw, bh, cx, cy, comp = pick
+        near = set()                                     # refine the cell-sized box to the real pixel extent (cells are 8 px coarse)
+        for c in comp:
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    near.add((c // gw + dy) * gw + (c % gw + dx))
+        pxs = pys = None
+        for i in range(n):
+            if es[i] and (((i // CW) // CELL) * gw + min((i % CW) // CELL, gw - 1)) in near:
+                x_, y_ = i % CW, i // CW
+                pxs = (x_, x_) if pxs is None else (min(pxs[0], x_), max(pxs[1], x_))
+                pys = (y_, y_) if pys is None else (min(pys[0], y_), max(pys[1], y_))
+        if pxs:
+            bw, bh = pxs[1] - pxs[0] + 1, pys[1] - pys[0] + 1
+            cx, cy = X0 + (pxs[0] + pxs[1] + 1) / 2.0, Y0 + (pys[0] + pys[1] + 1) / 2.0
+        need_w = bw + 20
+        need_h = bh + 10
+        w = max(need_w, need_h / WM_ASPECT) * float(os.environ.get("YTM_WM_SCALE", "1.0"))
+        w = min(float(os.environ.get("YTM_WM_MAX", "540")), max(float(os.environ.get("YTM_WM_MIN", "330")), w))
+        w = int(w) & ~1
+        h = int(round(w * WM_ASPECT)) & ~1
+        x = int(min(1280 - w, max(0, cx - w / 2.0)))
+        y = int(min(650 - h, max(540, cy - h / 2.0)))
+        spec = {"x": x, "y": y, "w": w, "h": h}
+        log("wm probe: source watermark %dx%d @%d,%d -> our badge %dx%d @%d,%d" % (bw, bh, int(cx - bw / 2.0), int(cy - bh / 2.0), w, h, x, y))
+        return spec
+    except Exception as e:
+        log("wm probe failed (%s) -> default badge" % str(e)[:80])
+        return None
+
+
+def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False, wm_spec=None):
     yt, fb = outputs()
     base = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-stats", "-reconnect", "1", "-reconnect_streamed", "1",
             "-reconnect_delay_max", "5", "-fflags", "+genpts", "-i", hls]
@@ -943,6 +1055,11 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False):
         wt = os.environ.get("YTM_WM_TEXT", "LOCAL MATCH LIVE").strip()
         if re.fullmatch(r"\d{1,4}:\d{1,4}:\d{1,4}:\d{1,4}", bx_):
             wx, wy, ww, wh = [int(v) for v in bx_.split(":")]
+            if wm_spec:                                           # auto-fitted to the source watermark (wm_probe)
+                try:
+                    wx, wy, ww, wh = int(wm_spec["x"]), int(wm_spec["y"]), int(wm_spec["w"]), int(wm_spec["h"])
+                except Exception:
+                    pass
             bimg = os.environ.get("YTM_WM_IMG", "lml_badge.png").strip()      # pro-style LML SPORTS badge (make_lml_badge.py); =off -> old black bar + text
             if bimg and bimg.lower() != "off" and os.path.isfile(bimg):
                 badge = (bimg, wx, wy, ww, wh)
@@ -1015,11 +1132,21 @@ class Relay:
             else:
                 spec = logo_probe(hls)
                 self.st["logo_probe"] = {"video_id": vid, "spec": spec, "ver": LOGO_PROBE_VER, "at": int(time.time())}
+        wm_spec = None
+        if os.environ.get("YTM_WM_AUTO", "on").lower() != "off" and os.environ.get("YTM_WM", "on").strip().lower() != "off":
+            vid = (self.st.get("relay") or {}).get("video_id") or getattr(self, "_cur_vid", None)
+            wp = self.st.get("wm_probe") or {}
+            if vid and wp.get("video_id") == vid and wp.get("ver") == WM_PROBE_VER and "spec" in wp \
+                    and (wp["spec"] or time.time() - wp.get("at", 0) < 600):      # same match, restart/chain -> reuse; an empty probe is retried after 10 min
+                wm_spec = wp["spec"]
+            else:
+                wm_spec = wm_probe(hls)
+                self.st["wm_probe"] = {"video_id": vid, "spec": wm_spec, "ver": WM_PROBE_VER, "at": int(time.time())}
         _y, _f = outputs()
         self.st["fb_on"], self.st["yt_on"] = bool(_f), bool(_y)
         permitted = False                                    # no allowlist: source marks are never removed/covered; only our logo overlay is added
         self.st["strip_permitted"] = permitted
-        return self._popen(ffmpeg_cmd(hls, self.rtmp, strip, spec, permitted), stderr=self._elog)
+        return self._popen(ffmpeg_cmd(hls, self.rtmp, strip, spec, permitted, wm_spec), stderr=self._elog)
 
     def _tail(self):
         """last ffmpeg output (stream key masked) -> state, so it is visible without Actions logs"""
