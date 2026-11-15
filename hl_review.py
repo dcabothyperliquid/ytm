@@ -756,17 +756,22 @@ def fb_retry():
 
 
 def do_fb_backfill(c):
-    """Dashboard 'purane shorts bhi FB pe bhejo': mark YouTube-uploaded items without a Facebook post for the retry path."""
+    """Dashboard 'FB pe bhejo': mark YouTube-uploaded items without a Facebook post for the retry path.
+    c.sid -> only that item; c.force -> also re-arm an item whose earlier Facebook attempts failed (fb_error / fb_tries used up)."""
     cfg = load_cfg()
     want = (c.get("vid") or "").strip()
+    want_sid = (c.get("sid") or "").strip()
+    force = bool(c.get("force"))
 
     def mut(st):
         for m in st["matches"]:
             if want and m["vid"] != want:
                 continue
             for sid, it in [("highlight", m["highlight"])] + [(x["id"], x) for x in m.get("shorts", [])]:
+                if want_sid and sid != want_sid:
+                    continue
                 if it.get("uploaded") and (it["uploaded"] or {}).get("yid") and not it.get("fb_uploaded") \
-                        and not it.get("fb_error") and _fb_target(cfg, m["vid"], sid) != "yt":
+                        and (force or not it.get("fb_error")) and _fb_target(cfg, m["vid"], sid) != "yt":
                     it["fb_error"] = "backfill"
                     it["fb_tries"] = 1
     save_state(mut, "hl fb backfill")
