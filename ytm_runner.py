@@ -865,8 +865,8 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None):
     # scoreboard, bottom-right corner, two small icons either side of the bottom-centre mark. YTM_REMOVE="x:y:w:h;..." overrides, =off disables.
     # Default boxes: 3 corner/edge marks + 3 bottom-centre watermark boxes (the latter only while strip=True, i.e. always unless
     # YTM_MARK_DETECT=on and the probe says there is no watermark). Applied to the SOURCE picture before our tag/logo go on.
-    rm = os.environ.get("YTM_REMOVE", "").strip() or ("1:695:150:24;1155:589:122:30;1130:695:148:24"   # Tensports etc. corner logos/watermarks: always removed
-          + (";470:578:48:36;764:578:48:36;508:576:256:38" if strip else ""))
+    rm = os.environ.get("YTM_REMOVE", "").strip() or (";".join(["470:578:48:36", "764:578:48:36", "508:576:256:38"]) if strip else "off")
+    # (old corner boxes 1:695:150:24;1155:589:122:30;1130:695:148:24 left white/blur patches under the timer and at the ticker ends -> not default; add via YTM_REMOVE if a source needs them)
     if rm.lower() != "off":
         for bx in rm.split(";"):
             if re.fullmatch(r"\d{1,4}:\d{1,4}:\d{1,4}:\d{1,4}", bx.strip()):
