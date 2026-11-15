@@ -844,7 +844,7 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False):
     yt, fb = outputs()
     base = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-stats", "-reconnect", "1", "-reconnect_streamed", "1",
             "-reconnect_delay_max", "5", "-fflags", "+genpts", "-i", hls]
-    logo = os.environ.get("YTM_LOGO", "logo.png")      # transparent wordmark; an opaque round alternative is lml_circle.png (YTM_LOGO=lml_circle.png)
+    logo = os.environ.get("YTM_LOGO", "lml_logo.png")      # round LML logo, navy-filled inside the ring (lml_logo.png). Alternatives: YTM_LOGO=logo.png (transparent wordmark + navy LIVE patch) or lml_circle.png
     if not os.path.isfile(logo):
         if fb and yt:
             return base + ["-map", "0:v?", "-map", "0:a?", "-c", "copy", "-tag:a", "10", "-f", "tee", _tee(rtmp, fb)]
