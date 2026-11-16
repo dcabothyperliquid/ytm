@@ -32,6 +32,8 @@ SHORTS_ENABLED = os.environ.get("HL_SHORTS_ENABLED", "0").strip().lower() in ("1
 TARGET_MIN = float(os.environ.get("HL_TARGET_MIN", "10") or 10)
 MODEL = os.environ.get("HL_MODEL", "small") or "small"
 LANG = os.environ.get("HL_LANG", "hi") or None               # commentary language; "" = auto
+AUTO_MIN_START = 30.0        # s: an auto-made match must start later than this in the VOD (else the VOD began mid-match)
+AUTO_MIN_WINDOW = 15 * 60.0   # s: shortest window that can hold 2 innings (auto mode)
 MAX_CAND = int(os.environ.get("HL_MAX_CAND", "60"))
 MAX_H = int(os.environ.get("HL_MAX_H", "1080"))
 NO_WHISPER = os.environ.get("HL_NO_WHISPER", "") == "1"
@@ -1034,7 +1036,12 @@ def _cmd_run():
         background = not os.environ.get("HL_VIDEO", "").strip()
         cfg = hl_review.load_cfg()
         target = int(cfg.get("daily_highlights") or 0)
-        if background and not want and e["status"] == "pending" and e.get("last_over") is True and e.get("start") is not None and e.get("end") \
+        # sanity guard before auto-making/posting: window must not begin at the VOD start (stream joined mid-match = no toss / 1st innings missing)
+        # and must be long enough for 2 innings. Fails -> falls through to the manual "Confirm karo" step below.
+        window_ok = e.get("start") is not None and e.get("end") and e["start"] > AUTO_MIN_START and (e["end"] - e["start"]) >= AUTO_MIN_WINDOW
+        if background and not want and e["status"] == "pending" and e.get("last_over") is True and not window_ok:
+            note("auto skip: window shaky (%s - %s) - window VOD ke start se shuru ya bahut chhoti, dashboard me check karke Confirm karo" % (fmt(e.get("start") or 0), fmt(e.get("end") or 0)), "warning")
+        if background and not want and e["status"] == "pending" and e.get("last_over") is True and window_ok \
                 and hl_review.highlights_today() < target:
             # Naem 2026-11-16: a match that ended in the LAST over is made while today's target is not reached.
             # AUTO ON -> approved + posted right here (YouTube + FB); AUTO OFF -> stays in the dashboard for his Approve.
