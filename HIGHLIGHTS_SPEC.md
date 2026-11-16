@@ -66,13 +66,15 @@ Now the bot LOOKS at every ball clip (`hl_verify.verify_plan`, last step of `hl_
    The pitch colour is learned from the match (k-means on ~150 frames spread over the window; fixed 'tan strip' rule as fallback).
    Frames before the first TRACK = RUNUP, after it = AFTER.
 2. `hl_verify.judge()` (plain rules, unit tested): clip starts inside the tracking -> start earlier (seen tracking + 4 s run-up);
-   run-up longer than 7 s -> start later; clip ends before the ball leaves / before the result shows -> extend (max 2x);
+   lead before the ball leaves the bat longer than 5.5 s -> start later (target: bowler starts running ~4 s before the hit); clip ends before the ball leaves / before the result shows -> extend (max 2x);
    12 s of pitch camera without any tracking cut = bowled / lbw, accepted.
 3. Edges move, the clip is looked at again (max 8 tries); only an OK clip is accepted, otherwise the best try is kept and logged UNSURE.
    One clip at a time, in order; start never goes into the previous clip, never after the planned shot time.
 Log per clip: `[verify] four 97.0-108.5 OK (2 tries) ... | PPPPPPttPPPPPPPP` (P pitch view, t tracking) + `[verify] pitch model: learned ...`.
 If a clip still looks wrong: read that log line first (the P/t string shows what the bot saw), then fix thresholds in PitchModel / judge.
-Also: PAD_SB pre-roll 3.5 -> 8 s (run-up stays in even if the check is off), HL_MAX_S 540 -> 660. HL_VERIFY=0 switches the check off.
+Also: PAD_SB pre-roll 3.5 -> ~7 s (run-up stays in even if the check is off), HL_MAX_S 540 -> 660. HL_VERIFY=0 switches the check off.
 Scoreboard fix: a score jump typed after 3+ balls (a wicket, or 18 runs in 6 balls) used to create NO event (last over of the NGPL final was missing);
 now wickets always count and `burst` placeholders make the graphic scan look at the whole stretch (`hl_scoreboard.events_from_states`, `fine_banner_scan`).
 Tests: `PYTHONPATH=. python tests/test_hl_verify.py` (needs a sample reel for the RealFrames class, else skipped) and `tests/test_hl_burst.py`.
+Order in build_plan: replay cut -> FRAME CHECK (start = bowler's run-up, ball + result shown) -> sentence snap of EVERY ball clip's END
+(commentary of that ball finished, `snap_plan(..., snap_all=True)`; a frame-checked clip never snaps its START back, so the run-up start stays).

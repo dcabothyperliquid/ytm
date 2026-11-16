@@ -7,7 +7,7 @@ Here the bot LOOKS at the clip instead:
     or TRACK (camera follows the ball: sky, boundary, floodlights, crowd). "Pitch colour" is learned from the match itself
     (k-means on ~150 frames spread over the window), so it is not tied to one ground.
   * frames before the first TRACK are the RUNUP, frames after it are AFTER.
-  * plain rules (judge(), unit tested): clip starts inside the tracking -> start earlier; run-up longer than 7 s -> start later;
+  * plain rules (judge(), unit tested): clip starts inside the tracking -> start earlier; run-up longer than 5.5 s -> start later;
     no tracking / result inside the clip -> extend the end. The edges move, the clip is looked at again (max 8 tries).
     A clip is accepted only when it starts on the run-up, shows the ball leaving and the result. One clip at a time, in order.
 Log line per clip: `[verify] four 97.0-108.5 OK (2 tries) PPPPPPttPPPPPPPP` (P = pitch view, t = tracking).
@@ -23,8 +23,8 @@ BALL_EVENTS = ("four", "six", "wicket", "noball", "wide", "dot", "first_ball", "
 PLAY_EVENTS = ("four", "six", "wicket")          # these must show the shot itself
 
 N_FRAMES = 8              # only used by the unit-test simulation; the real check samples FPS frames per second
-MAX_LEAD_S = 7.0          # more than this of plain run-up before the ball = start too early
-KEEP_LEAD_S = 4.5         # what we trim a too-early start back to (run-up before the ball)
+MAX_LEAD_S = 5.5          # more than this before the ball leaves the bat = start too early (bowler starts running ~4 s before the hit)
+KEEP_LEAD_S = 4.0         # what we trim a too-early start back to: the bowler's run-up
 STEP_LATE = {"TRACK": 4.0, "SHOT": 3.5, "AFTER": 6.0}
 MAX_CLIP_S = 45.0
 
@@ -305,6 +305,7 @@ def verify_seg(seg, prev_end, next_start, dur, label_fn, tries=8, log=print):
         a, b = a2, b2
     a, b, j, _ = best
     seg["start"], seg["end"] = a, b
+    seg["vchecked"] = True
     pt = "".join("P" if x in ("RUNUP", "AFTER") else "t" for x in j["labels"])
     seg["verify"] = {"ok": j["action"] == "ok", "tries": len(hist), "last": j["why"], "labels": pt}
     log("[verify] %s %.1f-%.1f %s (%d tries) %s | %s" % (kind, a, b, "OK" if j["action"] == "ok" else "UNSURE", len(hist), j["why"], pt))
@@ -358,6 +359,7 @@ def verify_plan(H, src, plan, dur):
             ts = [x for x in (m.get("t"), c.get("t")) if x is not None]
             m["t"] = min(ts) if ts else None
             m["verify"] = None
+            m["vchecked"] = bool(m.get("vchecked") or c.get("vchecked"))
         else:
             merged.append(c)
     plan["segs"] = merged

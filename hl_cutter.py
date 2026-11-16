@@ -55,10 +55,10 @@ PLAY_RX = re.compile(r"\b(?:four|six|run|runs|over|ball|wicket|single)\b|चौ�
 PAD = {"wicket": (6, 11), "six": (6, 9), "four": (5, 6), "noball": (4, 5), "wide": (3, 4), "dot": (3, 4)}
 # scoreboard mode: events sit at the moment the ball was HIT (see hl_scoreboard.align_events), so the clip is
 # "bowler runs in -> shot -> commentary of that ball" and then it cuts to the next four / six / wicket:
-PAD_SB = {"wicket": (9.0, 4.5), "six": (8.5, 5), "four": (8.0, 4.5), "noball": (9, 1.5), "wide": (9, 1.5), "dot": (6, 2)}
+PAD_SB = {"wicket": (7.5, 4.5), "six": (7.0, 5), "four": (6.5, 4.5), "noball": (9, 1.5), "wide": (9, 1.5), "dot": (6, 2)}
 # 2026-11-16: the old pre-roll (3.5 s) assumed the detected "shot" was the real hit. On the NGPL final the clips started with the ball
-# already flying (frames checked second by second), so the run-up was missing. Now ~8 s: hl_verify.py (frame check) trims it back
-# to the real run-up when a vision key is set; without a key the longer pre-roll alone already keeps the run-up in.   # t = the exact SHOT (video cut-away, refine_shots): run-up 3.5 s before, then flight + landing (six 8.5 s, four 8 s, wicket 9.5 s)
+# already flying (frames checked second by second), so the run-up was missing. Now ~7 s: hl_verify.py (frame check) trims it to ~4 s before the ball is hit
+# to the bowler's run-up (~4 s before the hit); if the check cannot run, the longer pre-roll alone keeps the run-up in.   # t = the exact SHOT (video cut-away, refine_shots): run-up 3.5 s before, then flight + landing (six 8.5 s, four 8 s, wicket 9.5 s)
 SIX_REPLAY = 10             # extra seconds after a TOP six (replay usually follows within ~10-25 s)
 TOP_SIXES = 1
 MUST = ("wicket", "six", "noball", "wide")
@@ -459,7 +459,10 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None, recap=None):
 
 
 # ---------------------------------------------------------------- sentence snapping
-def snap_plan(plan, segs, dur):
+SNAP_BALL = ("four", "six", "wicket", "noball", "wide", "dot", "first_ball", "first_ball2", "last_ball")
+
+
+def snap_plan(plan, segs, dur, snap_all=False):
     """Move every clip edge onto the commentator's sentence boundary (segs = [{start,end,text}]).
     END  : a sentence still running when the clip ends -> clip ends after that sentence (+SNAP_TAIL), at most SNAP_FWD_MAX later;
            if it would be later than that, cut back to the end of the previous sentence instead.
@@ -470,7 +473,8 @@ def snap_plan(plan, segs, dur):
     out, n_end, n_start = [], 0, 0
     for o in plan["segs"]:
         a, b = o["start"], o["end"]
-        if not o.get("feat"):                                    # plain shot-only clip: fixed ~7 s, no sentence snap
+        ball = snap_all and o.get("event") in SNAP_BALL         # every ball clip: the commentary of THIS ball is heard to its last word
+        if not o.get("feat") and not ball:                       # plain shot-only clip: fixed ~7 s, no sentence snap
             out.append(dict(o))
             continue
         for s in segs:                                           # ---- end
@@ -484,7 +488,7 @@ def snap_plan(plan, segs, dur):
                         b = prev[-1]["end"] + SNAP_TAIL
                 n_end += 1
                 break
-        for s in segs:                                           # ---- start
+        for s in ([] if (o.get("vchecked") or not o.get("feat")) else segs):   # ---- start (a frame-checked ball clip keeps its run-up start)
             if s["start"] < a - 0.3 and s["end"] > a + 0.3:
                 if s["end"] - a <= 1.5 and s["end"] + 0.1 < b - 3.0:
                     a = s["end"] + 0.1
@@ -881,25 +885,25 @@ def build_plan(H, wav, dur, db, target_min, hop=0.5, src=None):
                 plan = apply_replay_cut(plan, sp, dur)
             except Exception as e:                                  # noqa -- a plan with replays is still a plan
                 H.log("replay cut failed:", e)
-            try:
-                prog_note = H.hl_review.set_live
-                prog_note("transcribe", "Clip edges commentary ke sentence pe set kar raha hai", force=True)
-                wins = []
-                for o in [x for x in plan["segs"] if x.get("feat")]:
-                    a, b = o["start"] - SNAP_PAD, o["end"] + SNAP_PAD
-                    if wins and a <= wins[-1][1]:
-                        wins[-1] = (wins[-1][0], max(wins[-1][1], b))
-                    else:
-                        wins.append((a, b))
-                plan = snap_plan(plan, transcribe_ranges(H, wav, wins, dur), dur)
-            except Exception as e:                                  # noqa -- unsnapped plan is still a valid plan
-                H.log("sentence snap failed:", e)
-            try:                                                    # LOOK at every ball clip, move the edges until run-up -> shot -> result shows
+            try:                                                    # 1) LOOK at every ball clip: start at the bowler's run-up, ball + result shown
                 import hl_verify
                 H.hl_review.set_live("transcribe", "Har clip ke frames check ho rahe hain", force=True)
                 hl_verify.verify_plan(H, src, plan, dur)
             except Exception as e:                                  # noqa -- an unchecked plan is still a plan
                 H.log("frame check failed:", e)
+            try:
+                prog_note = H.hl_review.set_live
+                prog_note("transcribe", "Clip edges commentary ke sentence pe set kar raha hai", force=True)
+                wins = []
+                for o in [x for x in plan["segs"] if x.get("feat") or x.get("event") in SNAP_BALL]:
+                    a, b = o["start"] - SNAP_PAD, o["end"] + SNAP_PAD
+                    if wins and a <= wins[-1][1]:
+                        wins[-1] = (wins[-1][0], max(wins[-1][1], b))
+                    else:
+                        wins.append((a, b))
+                plan = snap_plan(plan, transcribe_ranges(H, wav, wins, dur), dur, snap_all=True)   # 2) then the commentary sentence of every ball is finished
+            except Exception as e:                                  # noqa -- unsnapped plan is still a valid plan
+                H.log("sentence snap failed:", e)
             H.log("cutter plan (scoreboard):", plan["info"], "dropped", plan["dropped"], "total %.0fs" % plan["total"])
             return plan
         H.log("scoreboard gave too few events -> commentary fallback")
