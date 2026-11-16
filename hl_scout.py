@@ -270,7 +270,7 @@ def _entry_from_board(H, vid, title, bm, want=None):
     unknown = [m for m in ms if m["result"] and m.get("last_over") is None]
     known_no = [m for m in ms if m["result"] and m.get("last_over") is False]
     best = (next((m for m in ms if want and str(m["match_no"]) == str(want)), None)           # the match number asked for (HL_MATCH)
-            or (ms[0] if want == "last" else None)
+            or (next((m for m in ms if m["result"]), ms[0]) if want == "last" else None)   # "last" = a match that has a result banner; incomplete matches only if none is complete
             or next((m for m in thrill if m["toss_seen"]), None) or (thrill[0] if thrill else None)
             or next((m for m in unknown if m["toss_seen"]), None) or (unknown[0] if unknown else None)
             or next((m for m in ms if m["result"]), None) or ms[0])
