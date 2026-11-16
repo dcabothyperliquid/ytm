@@ -294,7 +294,8 @@ def _entry_from_board(H, vid, title, bm, want=None):
     if no_thrill:
         reason = "Koi match last over me khatam nahi hua (%s) - highlight nahi banega" % ", ".join(m.get("overs_at_end") or "?" for m in known_no)
     elif done:
-        reason = "Scoreboard se match mila: toss se result tak — time check karke Confirm karo" if best["toss_seen"] \
+        reason = "Scoreboard se match mila: toss se result tak — time check karke Confirm karo" if best["toss_seen"] and best.get("start_src") != "counter" \
+            else "Scoreboard se match mila (over counter se first ball, toss nahi) — time check karke Confirm karo" if best["toss_seen"] \
             else "Scoreboard se match mila (toss nahi mila, first ball se) — time check karke Confirm karo"
     else:
         reason = "Toss mila par result banner nahi — match poora nahi laga, pakka check karo"

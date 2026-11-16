@@ -379,10 +379,15 @@ def _one_match(rows, t_first, t_last, t_done, limit, dur, toss_seen, title="", f
         mid = start + (t_res - start) * 0.5
         m["chase_frames"] = sum(1 for r in span if r[0] >= mid and r[0] <= t_res and r[1]["chase"])
         m["last_over"], m["overs_at_end"] = _last_over_finish(rows, t_res, res[0][2])
+        m["start_src"] = "toss" if toss_seen else "first_ball"
         cb = _first_ball(rows, floor, t_res)
         if cb:
-            m["start"] = round(max(0.0, cb[0] - LEAD_IN), 1)
-            m["start_note"] = "pehli ball over counter se: pehla reading %s (%.1f over), start %s" % (fmt(cb[1]), cb[2] // 6 + (cb[2] % 6) / 10.0, fmt(m["start"]))
+            cb_start = round(max(0.0, cb[0] - LEAD_IN), 1)
+            # toss found: the counter estimate may only pull the start EARLIER (1st-innings board unread -> counter starts late -> never push start later than the toss start)
+            if not toss_seen or cb_start < m["start"]:
+                m["start"] = cb_start
+                m["start_src"] = "counter"
+                m["start_note"] = "pehli ball over counter se: pehla reading %s (%.1f over), start %s" % (fmt(cb[1]), cb[2] // 6 + (cb[2] % 6) / 10.0, fmt(m["start"]))
     elif limit < dur and play_n >= MIN_PLAY_FRAMES and any(r[1]["chase"] for r in span):
         # no "WON BY" banner was read, but another match starts right after and this one had a chase (2nd innings):
         # it ended where its last live-scoreboard frame is
