@@ -45,6 +45,9 @@ LAYOUTS = [
     #    (".3 (8)" -> 3 overs = 18 balls), so the first 4 balls were invisible and the highlight opened on the 5th ball.
     #    strict: both texts must be a COMPLETE reading (digits-digit / d.d(d)) or the layout does not count.
     {"name": "D", "score": (0.465, 0.890, 0.550, 0.955), "overs": (0.549, 0.905, 0.602, 0.945), "strict": True},
+    # E: KCC Trophy Karkamb (2026-11-16): navy centre block bottom-left, light-blue score "50-1" with the overs "4.0(5)" (black on a white box) UNDER it;
+    #    same geometry in both innings (name bar peach/blue changes only). A-D read none of it -> few events, last over unseen.
+    {"name": "E", "score": (0.222, 0.876, 0.288, 0.924), "overs": (0.254, 0.932, 0.318, 0.968), "strict": True, "auto": True},
 ]
 RX_STRICT_SCORE = re.compile(r"^\d{1,3}-\d$")
 RX_STRICT_OVERS = re.compile(r"^\d{1,2}\.\d\(\d{1,2}\)$")
@@ -402,8 +405,9 @@ def read_score(path):
     for i in order:
         L = LAYOUTS[i]
         if L.get("strict"):
-            sc = _ocr_img(_box(img, L["score"]), psm=7, whitelist="0123456789-", scale=4)
-            ov = _ocr_img(_box(img, L["overs"]), psm=7, whitelist="0123456789.()", scale=4)
+            ai = bool(L.get("auto"))
+            sc = _ocr_img(_box(img, L["score"]), psm=7, whitelist="0123456789-", scale=4, auto_invert=ai)
+            ov = _ocr_img(_box(img, L["overs"]), psm=7, whitelist="0123456789.()", scale=4, auto_invert=ai)
             if not (RX_STRICT_SCORE.match(sc.replace(" ", "")) and RX_STRICT_OVERS.match(ov.replace(" ", ""))):
                 continue
             r = parse_score(sc, ov)
