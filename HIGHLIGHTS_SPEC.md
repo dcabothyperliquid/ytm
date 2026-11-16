@@ -56,3 +56,23 @@ Idea, not built: a cheap score before any download — result margin (close fini
 ytm: 1882625 (scout + confirm flow), c2e9528 (toss start / last ball + 45 s), a24abc1 (toss + result required), diag frames workflow.
 Xbot: a253458 (Step-1 confirm card, confirm|skip|rescout actions).
 Render for Xbot needs a Manual Deploy to show the new card.
+
+
+## 7. Frame check of every ball clip (2026-11-16, hl_verify.py) -- READ THIS FIRST when a clip looks wrong
+Problem (3 days of fixes): the shot time was GUESSED (score typing delay, graphic, camera cut-away); constants changed per match.
+Frames of the 523 s NGPL reel (second by second): 16 of 43 clips started with the ball already flying -- no run-up, no shot.
+Now the bot LOOKS at every ball clip (`hl_verify.verify_plan`, last step of `hl_cutter.build_plan`). NO API key, NO Render, no model download:
+1. 2 frames/s of the planned clip -> each frame is PITCH view (normal broadcast camera) or TRACK (camera follows the ball: sky, boundary, floodlights).
+   The pitch colour is learned from the match (k-means on ~150 frames spread over the window; fixed 'tan strip' rule as fallback).
+   Frames before the first TRACK = RUNUP, after it = AFTER.
+2. `hl_verify.judge()` (plain rules, unit tested): clip starts inside the tracking -> start earlier (seen tracking + 4 s run-up);
+   run-up longer than 7 s -> start later; clip ends before the ball leaves / before the result shows -> extend (max 2x);
+   12 s of pitch camera without any tracking cut = bowled / lbw, accepted.
+3. Edges move, the clip is looked at again (max 8 tries); only an OK clip is accepted, otherwise the best try is kept and logged UNSURE.
+   One clip at a time, in order; start never goes into the previous clip, never after the planned shot time.
+Log per clip: `[verify] four 97.0-108.5 OK (2 tries) ... | PPPPPPttPPPPPPPP` (P pitch view, t tracking) + `[verify] pitch model: learned ...`.
+If a clip still looks wrong: read that log line first (the P/t string shows what the bot saw), then fix thresholds in PitchModel / judge.
+Also: PAD_SB pre-roll 3.5 -> 8 s (run-up stays in even if the check is off), HL_MAX_S 540 -> 660. HL_VERIFY=0 switches the check off.
+Scoreboard fix: a score jump typed after 3+ balls (a wicket, or 18 runs in 6 balls) used to create NO event (last over of the NGPL final was missing);
+now wickets always count and `burst` placeholders make the graphic scan look at the whole stretch (`hl_scoreboard.events_from_states`, `fine_banner_scan`).
+Tests: `PYTHONPATH=. python tests/test_hl_verify.py` (needs a sample reel for the RealFrames class, else skipped) and `tests/test_hl_burst.py`.

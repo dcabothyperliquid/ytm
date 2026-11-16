@@ -112,7 +112,8 @@ def _ok_step(a, g):
     """is scoreboard state g a believable next state after a (same innings)?"""
     dr, dw, db = g["runs"] - a["runs"], g["wk"] - a["wk"], g["balls"] - a["balls"]
     # one ball = at most 6 (+1 for a no-ball): 87 -> 99 in ONE ball is an OCR misread (89 read as 99), not a state
-    return 0 <= dr <= 7 * max(1, db) + 1 and 0 <= dw <= 1 and 0 <= db <= 2
+    # 2026-11-16: db up to 8 / dw up to 2 -- in the NGPL final's last over the operator typed 18 runs + a wicket after 6 balls
+    return 0 <= dr <= 7 * max(1, db) + 1 and 0 <= dw <= 2 and 0 <= db <= 8
 
 
 def consistent_states(rows, need=2):
@@ -169,8 +170,8 @@ def events_from_states(states, lag=4.0):
             dr, dw, db = s["runs"] - prev["runs"], s["wk"] - prev["wk"], s["balls"] - prev["balls"]
             t = max(prev["t_last"], s["t"] - lag)
             kind = None
-            if dw == 1 and dr <= 4 and db <= 2:
-                kind = "wicket"
+            if dw >= 1:
+                kind = "wicket"          # any state jump that holds a wicket (was: only dr <= 4 and db <= 2 -> a wicket typed after 3+ balls vanished)
             elif dw == 0 and db == 1 and dr in (4, 5):
                 kind = "four"
             elif dw == 0 and db == 1 and dr in (6, 7):
@@ -185,6 +186,12 @@ def events_from_states(states, lag=4.0):
             if kind:
                 events.append({"kind": kind, "t": t, "t_end": t + 2.0, "t_state": s["t"], "inn": inn, "balls": s["balls"], "mx": s["mx"],
                                "runs": dr, "text": "%d-%d %s" % (s["runs"], s["wk"], "%d.%d" % divmod(s["balls"], 6)), "db": 0.0})
+            # several balls typed at once with big runs and / or a wicket: which of them were fours / sixes is unknown -> placeholder;
+            # analyze_window scans the time between the two score readings for the FOUR / SIX / WICKET graphics and turns them into events
+            if db >= 2 and (dr > 3 * db or dw >= 1) and dr >= 4:
+                events.append({"kind": "burst", "t": max(prev["t_last"] - 2.0, 0.0), "t_end": s["t"], "t_state": s["t"], "t_prev": prev["t_last"], "inn": inn,
+                               "balls": s["balls"], "mx": s["mx"], "runs": dr, "db": 0.0,
+                               "text": "%d-%d %s (+%d in %d balls)" % (s["runs"], s["wk"], "%d.%d" % divmod(s["balls"], 6), dr, db)})
         prev = s
     return events, innings
 
@@ -428,6 +435,9 @@ def fine_banner_scan(H, src, events, banners, step=1.0, back=30.0, fwd=4.0):
     onsets = banner_onsets(sorted(banners, key=lambda b: b[0]))
     todo = []
     for e in events:
+        if e["kind"] == "burst":                           # several balls typed at once: look at the whole stretch between the two readings
+            todo.append(e)
+            continue
         if e["kind"] not in ("six", "four", "wicket"):
             continue
         ts = e["t_state"]
@@ -445,6 +455,8 @@ def fine_banner_scan(H, src, events, banners, step=1.0, back=30.0, fwd=4.0):
         idx, e = item
         a = max(0.0, e["t_state"] - back)
         b = e["t_state"] + fwd
+        if e["kind"] == "burst":
+            a = max(0.0, e.get("t_prev", e["t_state"] - back) - 3.0)
         d = os.path.join(base, "e%03d" % idx)
         os.makedirs(d, exist_ok=True)
         vf = "fps=1/%g,crop=iw:ih*%.3f:0:ih*%.3f" % (step, 1 - STRIP_Y0, STRIP_Y0)
@@ -458,11 +470,14 @@ def fine_banner_scan(H, src, events, banners, step=1.0, back=30.0, fwd=4.0):
                 k = None
             if k is None:
                 try:
-                    if banner_present(pth):                # a graphic is up that OCR cannot read: it is THIS event's (kind known from the score)
+                    if banner_present(pth) and e["kind"] != "burst":   # a graphic is up that OCR cannot read: it is THIS event's (kind known from the score)
                         k = e["kind"]
                 except Exception:                          # noqa
                     pass
-            got.append((a + i * step, k if k == e["kind"] else None))
+            if e["kind"] == "burst":
+                got.append((a + i * step, k if k in ("six", "four", "wicket") else None))
+            else:
+                got.append((a + i * step, k if k == e["kind"] else None))
         return idx, got
 
     for idx, got in _pmap(one, list(enumerate(todo))):
@@ -532,6 +547,10 @@ def analyze_window(H, src, dur):
         fine_banner_scan(H, src, events, banners)
     except Exception as ex:                                  # noqa -- the coarse banners still work
         H.log("fine banner scan failed:", ex)
+    n_burst = sum(1 for e in events if e["kind"] == "burst")
+    events = [e for e in events if e["kind"] != "burst"]
+    if n_burst:
+        H.log("scoreboard: %d multi-ball score jumps (operator typed several balls at once) -> their graphics are added as events" % n_burst)
     lag, n_al, n_add = align_events(events, banner_onsets(sorted(banners, key=lambda b: b[0])), state_ts=[st["t"] for st in states])
     H.log("scoreboard: score->ball delay %.1fs (%d events matched to their SIX/FOUR/WICKET graphic, %d more found only by the graphic)" % (lag, n_al, n_add))
     kinds = {}
