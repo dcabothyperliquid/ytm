@@ -17,7 +17,7 @@ class Rules(unittest.TestCase):
 
     def test_starts_in_ball_flight_is_late(self):          # the 2026-11-15 NGPL clips: ball already flying at frame 1
         j = V.judge([T, T, T, A, A, A, A, A], "four", 1.0)
-        self.assertEqual((j["action"], j["shift"]), ("earlier", 4.0))
+        self.assertEqual((j["action"], j["shift"]), ("earlier", 7.0))   # 3 s of tracking seen + 4 s run-up
 
     def test_starts_on_the_shot_is_late(self):
         self.assertEqual(V.judge([S, T, T, A, A, A, A, A], "six", 1.5)["action"], "earlier")
@@ -59,9 +59,18 @@ class Rules(unittest.TestCase):
     def test_unreadable_is_unknown_not_a_loop(self):
         self.assertEqual(V.judge([O] * 8, "four", 1.0)["action"], "unknown")
 
-    def test_parse(self):
-        self.assertEqual(V.parse_labels('<think>x</think>{"1":"runup","2":"TRACK","3":"x","4":"AFTER"}', 4), [R, T, O, A])
-        self.assertIsNone(V.parse_labels("no json", 4))
+    def test_long_clip_without_a_tracking_cut_is_ok(self):   # bowled / lbw: the camera never follows a ball
+        self.assertEqual(V.judge([R] * 6 + [A] * 18, "wicket", 0.5)["action"], "ok")
+
+
+class CvLabels(unittest.TestCase):
+    def test_labels_follow_the_camera(self):
+        self.assertEqual(V.cv_labels([1, 1, 1, 0, 0, 1, 1, 1]), [R, R, R, T, T, A, A, A])
+        self.assertEqual(V.cv_labels([0, 0, 0, 1, 1, 1, 1]), [T, T, T, A, A, A, A])     # starts inside the tracking = late
+
+    def test_one_odd_frame_is_not_a_cut(self):
+        self.assertEqual(V.cv_labels([1, 1, 0, 1, 1, 1]), [R] * 6)
+        self.assertEqual(V.cv_labels([1, 1, 1, 1, 0, 1]), [R] * 6)
 
 
 def world(T0, runup=5.0, flight=4.0, after=8.0, prev_after=True):
@@ -132,12 +141,32 @@ class Loop(unittest.TestCase):
             self.assertTrue(seg["verify"]["ok"], (off, seg["verify"]))
 
 
-@unittest.skipUnless(os.path.exists("/home/claude/hl/hl_p.mp4"), "needs the sample preview")
-class Frames(unittest.TestCase):
-    def test_grab_frames(self):
-        jpg, dt = V.grab_frames("/home/claude/hl/hl_p.mp4", 120.0, 128.0)
-        self.assertGreater(len(jpg), 5000)
-        self.assertAlmostEqual(dt, 1.0)
+PREVIEW = "/home/claude/hl/hl_p.mp4"      # the finished 523 s NGPL reel: clips 9 s and 123 s start with the ball already flying
+
+
+@unittest.skipUnless(os.path.exists(PREVIEW), "needs the sample preview")
+class RealFrames(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.look = V.Looker(PREVIEW, 523.0, log=lambda *a: None)
+        cls.mode = cls.look.calibrate()
+
+    def test_model_is_learned_on_this_ground(self):
+        self.assertEqual(self.mode, "learned", self.look.model.info)
+
+    def test_late_clips_are_seen_as_late(self):
+        for a, b in ((9, 17), (123, 131), (25, 33)):
+            lab, dt = self.look.labels(a, b)
+            self.assertEqual(lab[0], "TRACK", (a, "".join(x[0] for x in lab)))
+
+    def test_good_clips_start_on_the_pitch_camera(self):
+        for a, b in ((17, 25), (0, 9), (261, 272)):
+            lab, dt = self.look.labels(a, b)
+            self.assertEqual(lab[0], "RUNUP", (a, "".join(x[0] for x in lab)))
+
+    def test_late_clip_is_flagged_by_judge(self):
+        lab, dt = self.look.labels(123, 131)
+        self.assertEqual(V.judge(lab, "four", dt)["action"], "earlier")
 
 
 if __name__ == "__main__":

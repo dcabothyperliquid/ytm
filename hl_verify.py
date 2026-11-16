@@ -1,55 +1,32 @@
-"""Per-clip frame check for the highlights reel (2026-11-16).
+"""Per-clip frame check for the highlights reel (2026-11-16) -- NO API key, NO Render, runs inside the Actions job.
 
-Why: every earlier fix guessed the shot time from indirect signals (score typing delay, graphic, camera cut) and each match
-needed other constants. Here the bot LOOKS at the clip instead: it samples frames of the candidate clip, a vision model labels
-every frame (run-up / shot / ball tracking / after the play / replay / other), plain rules decide "starts too late",
-"starts in the previous ball", "ends before the shot" ... and the clip edges are moved and re-checked. A clip is accepted
-only when it starts on the bowler's run-up, shows the shot and ends after it. One clip at a time, in order.
+Why: every earlier fix GUESSED the shot time from indirect signals (score typing delay, graphic, camera cut) and each match needed other
+constants. On the NGPL final 16 of 43 clips started with the ball already in the air (frames of the finished reel, second by second).
+Here the bot LOOKS at the clip instead:
+  * 2 frames per second of the candidate clip -> each frame is PITCH view (the normal broadcast camera: pitch strip, batsmen, bowler)
+    or TRACK (camera follows the ball: sky, boundary, floodlights, crowd). "Pitch colour" is learned from the match itself
+    (k-means on ~150 frames spread over the window), so it is not tied to one ground.
+  * frames before the first TRACK are the RUNUP, frames after it are AFTER.
+  * plain rules (judge(), unit tested): clip starts inside the tracking -> start earlier; run-up longer than 7 s -> start later;
+    no tracking / result inside the clip -> extend the end. The edges move, the clip is looked at again (max 8 tries).
+    A clip is accepted only when it starts on the run-up, shows the ball leaving and the result. One clip at a time, in order.
+Log line per clip: `[verify] four 97.0-108.5 OK (2 tries) PPPPPPttPPPPPPPP` (P = pitch view, t = tracking).
 
-The model only CLASSIFIES frames (easy job); the decisions are deterministic (judge()), so they are unit tested.
-
-Config (env; the key is the only thing that must exist):
-  GROQ_API_KEY | GEMINI_API_KEY | HL_VISION_KEY   key of any OpenAI-compatible vision API
-  HL_VISION_URL    base url (default: Groq / Gemini by key)
-  HL_VISION_MODEL  model id (default: auto-discovered from the provider's /models)
-  HL_VERIFY=0      switch the check off
-  HL_VERIFY_TRIES  attempts per clip (default 8)
-  HL_VERIFY_BUDGET_S  stop checking after this many seconds, remaining clips keep their planned edges (default 1800)
+Env: HL_VERIFY=0 switches it off | HL_VERIFY_TRIES (default 8) | HL_VERIFY_BUDGET_S (default 1800: later clips keep their planned edges)
 """
-import base64
-import io
-import json
 import os
-import re
 import subprocess
-import tempfile
 import time
-import urllib.error
-import urllib.request
 
 LABELS = ("RUNUP", "SHOT", "TRACK", "AFTER", "REPLAY", "OTHER")
 BALL_EVENTS = ("four", "six", "wicket", "noball", "wide", "dot", "first_ball", "first_ball2", "last_ball")
 PLAY_EVENTS = ("four", "six", "wicket")          # these must show the shot itself
 
-N_FRAMES = 8
+N_FRAMES = 8              # only used by the unit-test simulation; the real check samples FPS frames per second
 MAX_LEAD_S = 7.0          # more than this of plain run-up before the ball = start too early
 KEEP_LEAD_S = 4.5         # what we trim a too-early start back to (run-up before the ball)
 STEP_LATE = {"TRACK": 4.0, "SHOT": 3.5, "AFTER": 6.0}
 MAX_CLIP_S = 45.0
-
-PROMPT = (
-    "These are %d frames (numbered 1-%d, left to right, top to bottom) of ONE short cricket broadcast clip, in time order. "
-    "Label EVERY frame with exactly one of:\n"
-    "RUNUP  = normal pitch camera BEFORE the ball is hit: bowler running in or about to bowl, batsman waiting at the crease.\n"
-    "SHOT   = the moment of the delivery or the batsman playing / hitting the ball, ball near the bat.\n"
-    "TRACK  = camera is following the ball or fielders: ball in the air, outfield, boundary rope, crowd, sky, floodlights, no pitch in view.\n"
-    "AFTER  = pitch camera AFTER the play: batsmen / fielders standing, talking, celebrating, umpire signalling; a FOUR / SIX / WICKET "
-    "graphic on the bottom bar also counts as AFTER.\n"
-    "REPLAY = slow-motion replay or a replay graphic / swoosh card.\n"
-    "OTHER  = anything else (advert, slate, empty ground, crowd close-up, black frame).\n"
-    "Answer with ONLY one JSON object like {\"1\":\"RUNUP\",\"2\":\"RUNUP\",...} with all %d keys. No other text."
-)
-
 
 # ------------------------------------------------------------------ the rules (pure, tested)
 def judge(labels, kind, dt):
@@ -107,7 +84,10 @@ def judge(labels, kind, dt):
             return out("trim_end", i * dt - 0.3, "next ball's run-up at frame %d" % (i + 1))
     # start problems
     if first in ("SHOT", "TRACK"):
-        return out("earlier", STEP_LATE[first], "starts after the shot (%s first)" % first)
+        lt = 0
+        while lt < n and L[lt] in ("SHOT", "TRACK"):
+            lt += 1
+        return out("earlier", max(STEP_LATE[first], lt * dt + 4.0), "starts after the shot (%s first, %.1f s of it)" % (first, lt * dt))
     if first == "AFTER" and not run:
         return out("earlier", STEP_LATE["AFTER"], "starts after the play, no run-up in the clip")
     if first in ("AFTER", "REPLAY", "OTHER") and run and run[0] <= max(1, n // 4):
@@ -125,6 +105,8 @@ def judge(labels, kind, dt):
         return out("later", lead * dt - KEEP_LEAD_S, "run-up too long (%.0f s)" % (lead * dt))
     # end problems: the shot never shows
     if need_play and not play and not after:
+        if n * dt >= 12.0:                                              # 12 s of pitch camera and the ball never left it: bowled / lbw / no tracking cut
+            return out("ok", 0.0, "no tracking cut in %.0f s (bowled / lbw)" % (n * dt))
         return out("extend", 4.0, "clip ends before the shot")
     if need_play and not after:                                          # shot / flight shown but not the payoff (graphic, celebration)
         return out("extend", 3.0, "clip ends before the result shows")
@@ -156,157 +138,117 @@ def next_edges(a, b, j, lo, hi, prev_end, next_start, dur, amax=None):
     return a2, b2
 
 
-# ------------------------------------------------------------------ frames + vision call
-def _pil():
-    from PIL import Image, ImageDraw
-    return Image, ImageDraw
+# ------------------------------------------------------------------ frames -> PITCH / TRACK (local, no model download, no key)
+FPS = 2.0
+CW, CH = 160, 90
 
 
-def grab_frames(src, a, b, n=N_FRAMES, w=320, h=180):
-    """n frames evenly over [a, b) -> (jpeg bytes of one numbered tile, dt)"""
-    Image, ImageDraw = _pil()
-    dt = (b - a) / float(n)
-    cells = []
-    tmp = tempfile.mkdtemp(prefix="hlv_")
-    for i in range(n):
-        t = a + i * dt
-        p = os.path.join(tmp, "f%02d.jpg" % i)
-        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", "%.2f" % t, "-i", src, "-frames:v", "1",
-                        "-vf", "scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2" % (w, h, w, h), "-q:v", "4", p],
-                       capture_output=True)
-        try:
-            im = Image.open(p).convert("RGB")
-        except Exception:                                   # noqa -- frame past the end of the file
-            im = Image.new("RGB", (w, h), (0, 0, 0))
-        d = ImageDraw.Draw(im)
-        d.rectangle([0, 0, 22, 16], fill=(0, 0, 0))
-        d.text((6, 2), str(i + 1), fill=(255, 255, 0))
-        cells.append(im)
-    cols = 4
-    rows = (n + cols - 1) // cols
-    tile = Image.new("RGB", (cols * w, rows * h))
-    for i, im in enumerate(cells):
-        tile.paste(im, ((i % cols) * w, (i // cols) * h))
-    buf = io.BytesIO()
-    tile.save(buf, "JPEG", quality=70)
-    for f in os.listdir(tmp):
-        try:
-            os.remove(os.path.join(tmp, f))
-        except OSError:
-            pass
-    try:
-        os.rmdir(tmp)
-    except OSError:
-        pass
-    return buf.getvalue(), dt
+def _frames(src, a, b, fps=FPS):
+    """frames of [a, b) at `fps` -> uint8 array (n, CH, CW, 3) BGR (one ffmpeg call)"""
+    import numpy as np
+    cmd = ["ffmpeg", "-loglevel", "error", "-ss", "%.2f" % max(0.0, a), "-t", "%.2f" % max(0.1, b - a), "-i", src, "-an", "-sn",
+           "-vf", "fps=%g,scale=%d:%d" % (fps, CW, CH), "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
+    r = subprocess.run(cmd, capture_output=True)
+    n = len(r.stdout) // (CW * CH * 3)
+    return np.frombuffer(r.stdout[:n * CW * CH * 3], dtype=np.uint8).reshape(n, CH, CW, 3)
 
 
-class Vision:
-    """tiny OpenAI-compatible client (Groq, Gemini, OpenRouter ...). label_frames(jpeg) -> [label]*N"""
-
-    def __init__(self, log=print):
-        self.log = log
-        self.key = os.environ.get("HL_VISION_KEY") or os.environ.get("GROQ_API_KEY") or os.environ.get("GEMINI_API_KEY") or ""
-        gem = bool(os.environ.get("GEMINI_API_KEY")) and not os.environ.get("HL_VISION_KEY") and not os.environ.get("GROQ_API_KEY")
-        self.base = (os.environ.get("HL_VISION_URL") or ("https://generativelanguage.googleapis.com/v1beta/openai" if gem else "https://api.groq.com/openai/v1")).rstrip("/")
-        self.model = os.environ.get("HL_VISION_MODEL", "")
-        self.gap = float(os.environ.get("HL_VISION_MIN_GAP", "2.2"))      # free tiers: ~30 requests / min
-        self._last = 0.0
-        self.calls = 0
-        self.dead = False
-        self.extra = {"reasoning_format": "hidden"}                      # dropped automatically when the model rejects it
-
-    @property
-    def ready(self):
-        return bool(self.key) and not self.dead
-
-    def _http(self, path, body=None, timeout=90):
-        req = urllib.request.Request(self.base + path, data=(json.dumps(body).encode() if body is not None else None),
-                                     headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json", "User-Agent": "hl-verify/1.0"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8", "replace"))
-
-    def discover(self):
-        """no model configured: ask the provider which models it has and pick a vision-capable one"""
-        try:
-            ids = [m.get("id", "") for m in self._http("/models", timeout=30).get("data", [])]
-        except Exception as e:                                           # noqa
-            self.log("[verify] cannot list models:", e)
-            return False
-        pref = [r"qwen.*vl", r"qwen3\.\d.*27b", r"llama-4", r"gemini.*flash", r"vision", r"pixtral", r"gpt-4o"]
-        for rx in pref:
-            hit = [i for i in ids if re.search(rx, i, re.I) and not re.search(r"guard|whisper|tts|embed|prompt", i, re.I)]
-            if hit:
-                self.model = sorted(hit)[-1]
-                self.log("[verify] vision model auto-picked:", self.model)
-                return True
-        self.log("[verify] no vision model found among:", ids[:20])
-        return False
-
-    def label_frames(self, jpeg, n=N_FRAMES):
-        if not self.model and not self.discover():
-            self.dead = True
-            raise RuntimeError("no vision model")
-        b64 = base64.b64encode(jpeg).decode()
-        for attempt in range(5):
-            wait = self.gap - (time.time() - self._last)
-            if wait > 0:
-                time.sleep(wait)
-            self._last = time.time()
-            body = {"model": self.model, "temperature": 0, "max_tokens": 700,
-                    "messages": [{"role": "user", "content": [{"type": "text", "text": PROMPT % (n, n, n)},
-                                                              {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + b64}}]}]}
-            body.update(self.extra)
-            try:
-                res = self._http("/chat/completions", body)
-                self.calls += 1
-            except urllib.error.HTTPError as e:
-                msg = e.read().decode("utf-8", "replace")[:300]
-                if e.code == 429:
-                    time.sleep(min(30.0, 6.0 * (attempt + 1)))
-                    continue
-                if e.code in (400, 422) and self.extra and re.search(r"reasoning|unsupported|unknown|not support", msg, re.I):
-                    self.extra = {}
-                    continue
-                if e.code in (401, 403):
-                    self.dead = True
-                    raise RuntimeError("vision key rejected (%s)" % e.code)
-                if e.code in (400, 404) and re.search(r"model", msg, re.I):
-                    old = self.model
-                    self.model = ""
-                    if not self.discover() or self.model == old:
-                        self.dead = True
-                        raise RuntimeError("vision model %s unusable: %s" % (old, msg))
-                    continue
-                self.log("[verify] http %s %s" % (e.code, msg))
-                continue
-            except Exception as e:                                       # noqa -- network hiccup
-                self.log("[verify] call failed:", e)
-                time.sleep(3.0)
-                continue
-            txt = (res.get("choices") or [{}])[0].get("message", {}).get("content") or ""
-            lab = parse_labels(txt, n)
-            if lab:
-                return lab
-            self.log("[verify] unreadable answer:", txt[:120].replace("\n", " "))
-        raise RuntimeError("vision gave no usable answer")
+def _descr(frames):
+    """colour descriptor of the central / lower part of each frame (where the pitch is): HSV histogram + 'tan' fraction"""
+    import cv2
+    import numpy as np
+    out, tan = [], []
+    y0, y1, x0, x1 = int(CH * .35), int(CH * .80), int(CW * .15), int(CW * .85)
+    for f in frames:
+        hsv = cv2.cvtColor(f[y0:y1, x0:x1], cv2.COLOR_BGR2HSV)
+        h = cv2.calcHist([hsv], [0, 1, 2], None, [12, 4, 4], [0, 180, 0, 256, 0, 256]).ravel()
+        out.append(h / max(1.0, h.sum()))
+        H, S, V = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+        tan.append(float(((H >= 8) & (H <= 25) & (S >= 35) & (S <= 170) & (V >= 80)).mean()))
+    return np.array(out, dtype=np.float32), np.array(tan, dtype=np.float32)
 
 
-def parse_labels(txt, n):
-    txt = re.sub(r"<think>.*?</think>", "", txt or "", flags=re.S)
-    m = re.findall(r"\{[^{}]*\}", txt, re.S)
-    for blob in reversed(m):
-        try:
-            d = json.loads(blob)
-        except Exception:                                                # noqa
-            continue
-        out = []
-        for i in range(1, n + 1):
-            v = str(d.get(str(i), d.get(i, "OTHER"))).strip().upper()
-            out.append(v if v in LABELS else "OTHER")
-        if sum(1 for k in d if str(k).isdigit()) >= max(2, n // 2):
-            return out
-    return None
+class PitchModel:
+    """is this frame the normal pitch camera? Learned from the match: the biggest colour cluster of frames spread over the window.
+    Falls back to a fixed 'tan pitch strip' rule when the clusters are not clearly apart."""
+
+    def __init__(self):
+        self.proto = None
+        self.thr = None
+        self.mode = "tan"
+        self.info = ""
+
+    def fit(self, frames):
+        import cv2
+        import numpy as np
+        if len(frames) < 30:
+            self.info = "too few frames, fixed rule"
+            return self
+        d, tan = _descr(frames)
+        crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 0.01)
+        _, lab, cen = cv2.kmeans(d, 2, None, crit, 5, cv2.KMEANS_PP_CENTERS)
+        lab = lab.ravel()
+        big = int(np.bincount(lab, minlength=2).argmax())
+        proto = d[lab == big].mean(axis=0)
+        sim = np.minimum(d, proto).sum(axis=1)
+        sp, so = float(sim[lab == big].mean()), float(sim[lab != big].mean()) if (lab != big).any() else 0.0
+        frac = float((lab == big).mean())
+        agree = float(((sim > (sp + so) / 2) == (tan > 0.15)).mean())
+        # trust the learned model only when the clusters are clearly apart AND mostly agree with the colour rule on this ground
+        if sp - so >= 0.12 and 0.30 <= frac <= 0.97 and agree >= 0.8:
+            self.proto, self.thr, self.mode = proto, (sp + so) / 2.0, "learned"
+        self.info = "%s: pitch cluster %.0f%% of frames, sim %.2f vs %.2f, agrees with colour rule %.0f%%" % (self.mode, frac * 100, sp, so, agree * 100)
+        return self
+
+    def is_pitch(self, frames):
+        import numpy as np
+        if len(frames) == 0:
+            return np.zeros(0, dtype=bool)
+        d, tan = _descr(frames)
+        if self.mode == "learned":
+            return np.minimum(d, self.proto).sum(axis=1) > self.thr
+        return tan > 0.15
+
+
+def cv_labels(pitch):
+    """pitch: list of bool per frame (time order) -> RUNUP / TRACK / AFTER (3-frame median first: one odd frame is not a cut)"""
+    p = [bool(x) for x in pitch]
+    n = len(p)
+    sm = [p[i] if i in (0, n - 1) else (sum(p[i - 1:i + 2]) >= 2) for i in range(n)]
+    out, seen_t = [], False
+    for v in sm:
+        if not v:
+            seen_t = True
+            out.append("TRACK")
+        else:
+            out.append("AFTER" if seen_t else "RUNUP")
+    return out
+
+
+class Looker:
+    def __init__(self, src, dur, log=print):
+        self.src, self.dur, self.log = src, dur, log
+        self.model = PitchModel()
+
+    def calibrate(self, n=150):
+        """~n single frames spread over the window, each by its own fast seek (decoding a whole 2.5 h file would take minutes)"""
+        import numpy as np
+        from concurrent.futures import ThreadPoolExecutor
+        ts = [(i + 0.5) * self.dur / n for i in range(n)]
+
+        def one(t):
+            f = _frames(self.src, t, t + 1.2, fps=1.0)
+            return f[0] if len(f) else None
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            got = [f for f in ex.map(one, ts) if f is not None]
+        frames = np.array(got) if got else np.zeros((0, CH, CW, 3), dtype=np.uint8)
+        self.model.fit(frames)
+        self.log("[verify] pitch model:", self.model.info, "(%d frames)" % len(frames))
+        return self.model.mode
+
+    def labels(self, a, b):
+        fr = _frames(self.src, a, b)
+        return cv_labels(self.model.is_pitch(fr)), 1.0 / FPS
 
 
 # ------------------------------------------------------------------ the loop
@@ -320,6 +262,7 @@ def verify_seg(seg, prev_end, next_start, dur, label_fn, tries=8, log=print):
     amax = seg.get("t")
     amax = float(amax) if amax is not None else None
     best, seen, hist = None, set(), []
+    n_ext = 0
     probe = None                                         # {"orig": (a, b), "later": s, "flipped": bool}
     for k in range(tries):
         key = (round(a, 1), round(b, 1))
@@ -353,13 +296,18 @@ def verify_seg(seg, prev_end, next_start, dur, label_fn, tries=8, log=print):
                 a2, b2 = next_edges(a, b, {"action": "later", "shift": j["alt_later"]}, lo, hi, prev_end, next_start, dur, amax)
         else:
             a2, b2 = next_edges(a, b, j, lo, hi, prev_end, next_start, dur, amax)
+        if j["action"] == "extend":
+            n_ext += 1
+            if n_ext > 2 or b2 - a2 > 26.0:                              # the result never shows: do not keep growing the clip
+                break
         if (round(a2, 1), round(b2, 1)) == key:
             break
         a, b = a2, b2
     a, b, j, _ = best
     seg["start"], seg["end"] = a, b
-    seg["verify"] = {"ok": j["action"] == "ok", "tries": len(hist), "last": j["why"], "labels": "".join(x[0] for x in j["labels"])}
-    log("[verify] %s %.1f-%.1f %s (%d tries) %s" % (kind, a, b, "OK" if j["action"] == "ok" else "UNSURE", len(hist), j["why"]))
+    pt = "".join("P" if x in ("RUNUP", "AFTER") else "t" for x in j["labels"])
+    seg["verify"] = {"ok": j["action"] == "ok", "tries": len(hist), "last": j["why"], "labels": pt}
+    log("[verify] %s %.1f-%.1f %s (%d tries) %s | %s" % (kind, a, b, "OK" if j["action"] == "ok" else "UNSURE", len(hist), j["why"], pt))
     return seg
 
 
@@ -367,24 +315,21 @@ def verify_plan(H, src, plan, dur):
     """check every ball clip of the plan in order; clips of other kinds (toss, recap, finish) are left alone. -> summary dict"""
     if os.environ.get("HL_VERIFY", "1") == "0":
         return {"state": "off"}
-    vis = Vision(log=H.log)
-    if not vis.key:
-        H.log("[verify] OFF: no vision key (set GROQ_API_KEY or GEMINI_API_KEY as an Actions secret) -> clips keep the planned edges")
-        return {"state": "no_key"}
+    look = Looker(src, dur, log=H.log)
+    try:
+        mode = look.calibrate()
+    except Exception as e:                                               # noqa -- no calibration, no check; the plan stays as planned
+        H.log("[verify] calibration failed, clips keep the planned edges:", e)
+        return {"state": "failed", "error": str(e)[:80]}
     tries = int(os.environ.get("HL_VERIFY_TRIES", "8"))
     budget = float(os.environ.get("HL_VERIFY_BUDGET_S", "1800"))
     t0 = time.time()
     segs = plan["segs"]
     ok = unsure = skipped = 0
-
-    def label_fn(a, b):
-        jpg, dt = grab_frames(src, a, b)
-        return vis.label_frames(jpg), dt
-
     prev_end = 0.0
     for i, s in enumerate(segs):
         nxt = segs[i + 1]["start"] if i + 1 < len(segs) else dur
-        if s.get("event") not in BALL_EVENTS or not vis.ready or time.time() - t0 > budget:
+        if s.get("event") not in BALL_EVENTS or time.time() - t0 > budget:
             if s.get("event") in BALL_EVENTS:
                 skipped += 1
             prev_end = s["end"]
@@ -394,7 +339,7 @@ def verify_plan(H, src, plan, dur):
         except Exception:                                                # noqa
             pass
         try:
-            verify_seg(s, prev_end, nxt, dur, label_fn, tries=tries, log=H.log)
+            verify_seg(s, prev_end, nxt, dur, look.labels, tries=tries, log=H.log)
             if s["verify"]["ok"]:
                 ok += 1
             else:
@@ -410,13 +355,14 @@ def verify_plan(H, src, plan, dur):
             m = merged[-1]
             m["end"] = max(m["end"], c["end"])
             m["parts"] = m.get("parts", 1) + c.get("parts", 1)
-            m["t"] = min([x for x in (m.get("t"), c.get("t")) if x is not None] or [None]) if (m.get("t") is not None or c.get("t") is not None) else None
+            ts = [x for x in (m.get("t"), c.get("t")) if x is not None]
+            m["t"] = min(ts) if ts else None
             m["verify"] = None
         else:
             merged.append(c)
     plan["segs"] = merged
     plan["total"] = sum(c["end"] - c["start"] for c in merged)
-    res = {"state": "done", "ok": ok, "unsure": unsure, "skipped": skipped, "calls": vis.calls, "secs": round(time.time() - t0)}
+    res = {"state": "done", "model": mode, "ok": ok, "unsure": unsure, "skipped": skipped, "secs": round(time.time() - t0)}
     plan["info"]["verify"] = res
     H.log("[verify] done:", res, "new total %.0fs" % plan["total"])
     return res
