@@ -65,7 +65,37 @@ def write_file(path, obj, sha, msg):
 
 def load_cfg():
     c, _ = read_file(CFG)
-    return dict({"daily_shorts": 5, "daily_highlights": 2, "auto": True, "commands": [], "reviews": {}}, **(c or {}))
+    return dict({"daily_shorts": 5, "daily_highlights": 2, "lookback_days": 3, "auto": True, "commands": [], "reviews": {}}, **(c or {}))
+
+
+def highlights_today(st=None):
+    """Highlights made today (IST day of processing) - counts against the dashboard's daily_highlights target."""
+    if st is None:
+        st, _ = load_state()
+    today = time.strftime("%Y-%m-%d", time.gmtime(time.time() + IST))
+    return sum(1 for m in st.get("matches", []) if m.get("day") == today)
+
+
+def auto_approve(vid, sid="highlight"):
+    """Worker-side approve for AUTO mode (same record the dashboard's Approve button writes). A review the user REJECTED is never overridden."""
+    key = "%s/%s" % (vid, sid)
+    for _ in range(3):
+        c, sha = read_file(CFG)
+        c = c or {}
+        rv = dict(c.get("reviews") or {})
+        stt = (rv.get(key) or {}).get("status")
+        if stt == "approved":
+            return True
+        if stt == "rejected":
+            return False
+        rv[key] = {"status": "approved", "at": int(time.time()), "auto": True}
+        c["reviews"] = rv
+        try:
+            write_file(CFG, c, sha, "hl auto-approve %s" % key)
+            return True
+        except RuntimeError as e:                  # stale sha (dashboard wrote meanwhile) -> re-read and retry
+            log("auto_approve retry:", e)
+    return False
 
 
 def load_state():

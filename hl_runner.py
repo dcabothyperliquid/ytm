@@ -141,29 +141,59 @@ def cmd_cookies():
     open(COOKIES, "w").write(raw + "\n")
 
 
+def _parse_cand_line(line):
+    """'id|live|dur|timestamp|release_ts|upload_date|title' -> (vid, live, dur, epoch|None, title) or None."""
+    p = line.split("|", 6)
+    if len(p) < 7:
+        return None
+    vid, live, dur, ts, rts, upl, title = p
+    try:
+        dur = float(dur)
+    except ValueError:
+        return None                               # unknown duration (still processing)
+    epoch = None
+    for v in (rts, ts):
+        try:
+            epoch = float(v)
+            break
+        except ValueError:
+            pass
+    if epoch is None and re.fullmatch(r"\d{8}", upl or ""):
+        try:
+            epoch = time.mktime(time.strptime(upl, "%Y%m%d"))
+        except ValueError:
+            epoch = None
+    return vid, live, dur, epoch, title
+
+
 def find_candidates():
-    """Ended, long-enough, not-yet-processed videos on our channel (newest first)."""
+    """Ended, long-enough, not-yet-processed videos on our channel from the last `lookback_days` days (newest first).
+    A VOD needs ~2 days to show up on the channel, so the bot looks back 2-3 days (dashboard: lookback_days).
+    If YouTube gives no date for an entry it is kept (the playlist is already limited to the newest 15)."""
     done = {r["tag_name"] for r in gh_releases()}
     scouted = hl_scout.scout_vids()                 # already scouted (pending / confirmed / skipped): never auto-scout twice
+    try:
+        lookback = max(1, min(7, int(hl_review.load_cfg().get("lookback_days") or 3)))
+    except (TypeError, ValueError):
+        lookback = 3
+    oldest = time.time() - (lookback + 1) * 86400   # +1: dates from YouTube are day-precise
     cands = []
     for tab in ("streams", "videos"):
         r = sh(ytdlp_base() + ["--flat-playlist", "--playlist-end", "15", "--print",
-                               "%(id)s|%(live_status)s|%(duration)s|%(title)s",
+                               "%(id)s|%(live_status)s|%(duration)s|%(timestamp)s|%(release_timestamp)s|%(upload_date)s|%(title)s",
                                "https://www.youtube.com/@%s/%s" % (CHANNEL, tab)], check=False)
         for line in (r.stdout or "").splitlines():
-            p = line.split("|", 3)
-            if len(p) < 4:
+            c = _parse_cand_line(line)
+            if not c:
                 continue
-            vid, live, dur, title = p
+            vid, live, dur, epoch, title = c
             if live in ("is_live", "is_upcoming"):
                 continue
-            try:
-                dur = float(dur)
-            except ValueError:
-                continue                      # unknown duration (still processing)
+            if epoch is not None and epoch < oldest:
+                continue                          # older than the lookback window
             if dur < MIN_MIN * 60 or SKIP_TITLE.search(title) or "hl-" + vid in done or vid in scouted:
                 continue
-            if all(c[0] != vid for c in cands):
+            if all(x[0] != vid for x in cands):
                 cands.append((vid, title, dur))
     return cands
 
@@ -205,8 +235,17 @@ def cmd_gate():
             m = _M()
         hl_review.set_live("queued", "Manual scout shuru ho raha hai (pehle match ka time nikalega)", vid=m.group(1), force=True)
         return out_gh(go="true", mode="scout", vid=m.group(1))
-    if not hl_review.load_cfg().get("auto", True):
-        log("auto OFF in dashboard config")
+    # Daily target (dashboard "Daily highlights"): the bot keeps making last-over highlights until today's target is reached.
+    # AUTO ON = posts them directly, AUTO OFF = leaves them in the dashboard for your Approve.
+    cfg = hl_review.load_cfg()
+    target = int(cfg.get("daily_highlights") or 0)
+    made = hl_review.highlights_today()
+    if target <= 0:
+        log("daily highlights = 0 -> bot band")
+        return out_gh(go="false", vid="")
+    if made >= target:
+        log("daily target reached: %d/%d" % (made, target))
+        note("aaj ke %d/%d highlights ho chuke - aur scout nahi" % (made, target))
         return out_gh(go="false", vid="")
     after_end = os.environ.get("HL_AFTER_END", "") == "true"
     # triggered right when the relay ended: our VOD needs a few minutes before YouTube reports its duration
@@ -992,12 +1031,27 @@ def _cmd_run():
             hl_review.do_confirm(sys.modules[__name__], {"vid": vid, "start": e["start"], "end": e["end"]})
             hl_review.set_live("done", "Highlights ready (match %s) - dashboard me Approve karo" % want, vid=vid, force=True)
             return
-        auto_run = not os.environ.get("HL_VIDEO", "").strip() and hl_review.load_cfg().get("auto", True)
-        if auto_run and not want and e["status"] == "pending" and e.get("last_over") is True and e.get("start") is not None and e.get("end"):
-            # AUTO mode (Naem 2026-11-15): a match that ended in the LAST over is made without waiting for Confirm; every other match is skipped / left to hand
-            note("auto: last-over finish (%s) -> making highlights now (%s - %s)" % (e.get("overs_at_end"), fmt(e["start"]), fmt(e["end"])))
+        background = not os.environ.get("HL_VIDEO", "").strip()
+        cfg = hl_review.load_cfg()
+        target = int(cfg.get("daily_highlights") or 0)
+        if background and not want and e["status"] == "pending" and e.get("last_over") is True and e.get("start") is not None and e.get("end") \
+                and hl_review.highlights_today() < target:
+            # Naem 2026-11-16: a match that ended in the LAST over is made while today's target is not reached.
+            # AUTO ON -> approved + posted right here (YouTube + FB); AUTO OFF -> stays in the dashboard for his Approve.
+            note("last-over finish (%s) -> making highlights now (%s - %s) | today %d/%d" % (e.get("overs_at_end"), fmt(e["start"]), fmt(e["end"]), hl_review.highlights_today(), target))
             hl_review.do_confirm(sys.modules[__name__], {"vid": vid, "start": e["start"], "end": e["end"]})
-            hl_review.set_live("done", "Highlights ready (last over thriller) - dashboard me Approve karo", vid=vid, force=True)
+            if cfg.get("auto", True):
+                if hl_review.auto_approve(vid):
+                    try:
+                        n = hl_review.upload_approved()
+                        note("auto mode: approved + posted (%d uploaded)" % n)
+                    except Exception as ex:                # noqa - approved item is picked up by the next apply run
+                        note("auto post failed, next run retries: %s" % str(ex)[:160], "warning")
+                    hl_review.set_live("done", "Highlights ready + auto post (last over thriller)", vid=vid, force=True)
+                else:
+                    hl_review.set_live("done", "Highlights ready - tumne reject kiya tha, post nahi kiya", vid=vid, force=True)
+            else:
+                hl_review.set_live("done", "Highlights ready (last over thriller) - dashboard me Approve karo", vid=vid, force=True)
             return
         hl_review.set_live("done", "Match mila (%s - %s) — dashboard me check karke Confirm karo" % (fmt(e["start"] or 0), fmt(e["end"] or 0))
                            if e["status"] == "pending" else "Scout: %s" % e["reason"], vid=vid, force=True)
