@@ -276,6 +276,10 @@ def _entry_from_board(H, vid, title, bm, want=None):
             or next((m for m in ms if m["result"]), None) or ms[0])
     no_thrill = bool(not want and known_no and not thrill and not unknown)
     done = bool(best["result"] and best["end"])
+    # VOD joined mid-match: no toss seen, no over-counter first ball, window starts at the VOD start -> 1st innings is missing -> never make it (manual or auto)
+    partial = bool(done and best.get("start_src") == "first_ball" and (best.get("start") or 0.0) <= 30.0)
+    if partial:
+        done = False
     ev = []
     for m in ms:
         tag = "Match %s" % (m["match_no"] or "?")
@@ -293,6 +297,8 @@ def _entry_from_board(H, vid, title, bm, want=None):
     ev += [d[:200] for d in (bm.get("debug") or [])]
     if no_thrill:
         reason = "Koi match last over me khatam nahi hua (%s) - highlight nahi banega" % ", ".join(m.get("overs_at_end") or "?" for m in known_no)
+    elif partial:
+        reason = "Video match ke beech se shuru hota hai (toss / pehli innings nahi mili) - skip, highlight nahi banega"
     elif done:
         reason = "Scoreboard se match mila: toss se result tak — time check karke Confirm karo" if best["toss_seen"] and best.get("start_src") != "counter" \
             else "Scoreboard se match mila (over counter se first ball, toss nahi) — time check karke Confirm karo" if best["toss_seen"] \
@@ -300,7 +306,7 @@ def _entry_from_board(H, vid, title, bm, want=None):
     else:
         reason = "Toss mila par result banner nahi — match poora nahi laga, pakka check karo"
     entry = {"vid": vid, "title": H.clean_title(title) or title or vid, "vod_min": round(bm["dur"] / 60.0, 1),
-             "found": int(time.time()), "status": "skipped" if no_thrill else ("pending" if done else "incomplete"), "start": best["start"],
+             "found": int(time.time()), "status": "skipped" if (no_thrill or partial) else ("pending" if done else "incomplete"), "start": best["start"],
              "end": best["end"], "finished": done, "reason": reason, "evidence": ev[:12], "source": "scoreboard",
              "match_no": best["match_no"], "final": bool(best.get("final")), "last_over": best.get("last_over"), "overs_at_end": best.get("overs_at_end", ""),
              "others": [{"start": m["start"], "end": m["end"], "match_no": m["match_no"]} for m in ms if m is not best]}
