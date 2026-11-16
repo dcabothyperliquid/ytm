@@ -55,7 +55,7 @@ def _audio_to_wav(H, vid, dur):
             os.remove(os.path.join(H.WORK, f))
     url = "https://www.youtube.com/watch?v=" + vid
     hl_review.set_live("download", "Scout: sirf audio download (match ka time dhoondhne ke liye)", vid=vid, force=True)
-    H.sh(H.ytdlp_base() + ["--no-playlist", "-f", "worstaudio/worst", "-o", raw + ".%(ext)s", url])
+    H.ytdlp_dl("worstaudio/worst", ["-o", raw + ".%(ext)s", url], "scout audio download")
     src = next((os.path.join(H.WORK, f) for f in os.listdir(H.WORK) if f.startswith("scout_src")), None)
     if not src:
         raise RuntimeError("scout audio download failed")

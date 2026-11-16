@@ -107,6 +107,30 @@ def ytdlp_base():
     return cmd
 
 
+# YouTube sometimes serves only storyboards to one player client ("Requested format is not available").
+# Retry the SAME loose selector chain with other player clients before giving up.
+_FMT_CLIENTS = (None, "tv,web_safari", "android_vr,web", "mweb,web")
+
+
+def ytdlp_dl(sel, tail, label="download"):
+    """yt-dlp -f <sel> ... with a loose last-resort selector and player_client fallback. Raises only if all fail."""
+    sel = sel + "/bv*+ba/b/best"
+    last = None
+    for cl in _FMT_CLIENTS:
+        extra = ["--extractor-args", "youtube:player_client=" + cl] if cl else []
+        r = sh(ytdlp_base() + extra + ["--no-playlist", "-f", sel] + tail, check=False)
+        if r.returncode == 0:
+            if cl:
+                note("%s ok with player_client=%s" % (label, cl))
+            return r
+        last = r
+        err = (r.stderr or "") + (r.stdout or "")
+        log(label, "failed with client", cl or "default", err[-300:].replace("\n", " | "))
+        if "format is not available" not in err and "Only images are available" not in err:
+            break                                           # not a format problem (private, network, bot-check ...): other clients will not help
+    raise RuntimeError("yt-dlp failed (%d): %s" % (last.returncode, ((last.stderr or last.stdout) or "")[-600:]))
+
+
 def repo():
     return os.environ.get("GITHUB_REPOSITORY", "dcabothyperliquid/ytm")
 
@@ -860,8 +884,8 @@ def ensure_full(vid):
     h = min(MAX_H, FULL_H)
     sel = "b[height<=%d]/bv*[height<=%d]+ba/b" % (h, h)
     t0 = time.time()
-    sh(ytdlp_base() + ["--no-playlist", "-f", sel, "--merge-output-format", "mp4", "--concurrent-fragments", "8",
-                       "-o", path, "https://www.youtube.com/watch?v=" + vid])
+    ytdlp_dl(sel, ["--merge-output-format", "mp4", "--concurrent-fragments", "8",
+                   "-o", path, "https://www.youtube.com/watch?v=" + vid], "full download")
     note("full download %s: %.0f MB in %.0fs, free disk %.1f GB" % (vid, os.path.getsize(path) / 1e6, time.time() - t0, free_gb()))
     return path
 
@@ -974,7 +998,7 @@ def run_vid(vid, target_min=None, window=None):
     else:                                                    # no confirmed window (old rerun): whole VOD as before
         fmt_sel = "bv*[height<=%d]+ba/b[height<=%d]/b" % (MAX_H, MAX_H)
         t0 = time.time()
-        sh(ytdlp_base() + ["--no-playlist", "-f", fmt_sel, "--merge-output-format", "mp4", "-o", src, url])
+        ytdlp_dl(fmt_sel, ["--merge-output-format", "mp4", "-o", src, url], "vod download")
         note("downloaded %s: %.0f MB in %.0fs" % (vid, os.path.getsize(src) / 1e6, time.time() - t0))
     out = os.path.join(WORK, "out_" + vid)
     res = process(src, out, {"title": info, "vid": vid}, offset=offset)

@@ -78,7 +78,7 @@ jobs:
       - name: Gate (cheap) - is there a new ended stream?
         id: gate
         run: |
-          pip install -q "yt-dlp[default]"
+          pip install -q -U --pre "yt-dlp[default]"
           python hl_runner.py cookies
           python hl_runner.py gate
 

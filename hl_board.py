@@ -409,9 +409,9 @@ def _download_lowres(H, vid):
         if f.startswith("board_src"):
             os.remove(os.path.join(H.WORK, f))
     hl_review.set_live("download", "Scout: scoreboard ke liye chhota (360p) video download", vid=vid, force=True)
-    H.sh(H.ytdlp_base() + ["--no-playlist", "-f", "bv*[height<=%d]/bv*[height<=720]/worst" % BOARD_H,
-                           "-o", os.path.join(H.WORK, "board_src.%(ext)s"),
-                           "https://www.youtube.com/watch?v=" + vid])
+    H.ytdlp_dl("bv*[height<=%d]/bv*[height<=720]/worst" % BOARD_H,
+               ["-o", os.path.join(H.WORK, "board_src.%(ext)s"),
+                "https://www.youtube.com/watch?v=" + vid], "board download")
     src = next((os.path.join(H.WORK, f) for f in os.listdir(H.WORK) if f.startswith("board_src")), None)
     if not src:
         raise RuntimeError("scoreboard scout: video download failed")
