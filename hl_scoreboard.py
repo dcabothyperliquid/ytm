@@ -48,6 +48,9 @@ LAYOUTS = [
     # E: KCC Trophy Karkamb (2026-11-16): navy centre block bottom-left, light-blue score "50-1" with the overs "4.0(5)" (black on a white box) UNDER it;
     #    same geometry in both innings (name bar peach/blue changes only). A-D read none of it -> few events, last over unseen.
     {"name": "E", "score": (0.222, 0.876, 0.288, 0.924), "overs": (0.254, 0.932, 0.318, 0.968), "strict": True, "auto": True},
+    # F: Sewapuri CUP / Dilawlpur Banaras (LML full-width bar, 2026-11-16): big score "51-2" (yellow on red / blue on cyan) with the overs as "3.2/7"
+    #    (slash, no brackets) right of it; same geometry in both innings. "slash": the overs text is turned into "3.2(7)" before parsing.
+    {"name": "F", "score": (0.125, 0.878, 0.200, 0.940), "overs": (0.238, 0.890, 0.284, 0.928), "strict": True, "auto": True, "slash": True},
 ]
 RX_STRICT_SCORE = re.compile(r"^\d{1,3}-\d$")
 RX_STRICT_OVERS = re.compile(r"^\d{1,2}\.\d\(\d{1,2}\)$")
@@ -407,7 +410,9 @@ def read_score(path):
         if L.get("strict"):
             ai = bool(L.get("auto"))
             sc = _ocr_img(_box(img, L["score"]), psm=7, whitelist="0123456789-", scale=4, auto_invert=ai)
-            ov = _ocr_img(_box(img, L["overs"]), psm=7, whitelist="0123456789.()", scale=4, auto_invert=ai)
+            ov = _ocr_img(_box(img, L["overs"]), psm=7, whitelist="0123456789./()" if L.get("slash") else "0123456789.()", scale=4, auto_invert=ai)
+            if L.get("slash"):
+                ov = re.sub(r"/(\d{1,2})$", r"(\1)", ov.replace(" ", ""))
             if not (RX_STRICT_SCORE.match(sc.replace(" ", "")) and RX_STRICT_OVERS.match(ov.replace(" ", ""))):
                 continue
             r = parse_score(sc, ov)
