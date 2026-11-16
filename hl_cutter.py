@@ -243,7 +243,7 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None, recap=None):
             play_from = max(0.0, first - FIRST_LEAD)
         lo_t = sb["last_over_start"]
         real = [e for e in sb["events"] if e["t"] > lo_t - 2.0]
-        t_win = max([e["t_end"] for e in real] or [dur - SB_END_MAX])
+        t_win = max([e["t_end"] for e in real] or [lo_t])               # no event read in the last over: end at the last scoreboard state (t_fin below), NOT at dur-40 (= one 2-minute dead block)
         t_fin = float(sb.get("t_final") or 0.0)                     # first time the FINAL scoreboard state (target reached / all out) shows: the winning shot is already behind it
         end_a = min(dur, max(play_from + 30.0, t_win + 8.0, t_fin + 2.0 if t_fin else 0.0))   # the match-deciding over ball by ball incl. the WINNING shot, then win + celebration
         end_b = min(dur, end_a + FINISH_S)
