@@ -1027,6 +1027,11 @@ def _cmd_run():
         title, _, dur = info.rpartition("|")
         want = os.environ.get("HL_MATCH", "").strip()
         e = hl_scout.scout_vid(sys.modules[__name__], vid, title, want=want or None)
+        if want == "last" and e["status"] == "pending" and e.get("last_over") is not True:
+            # "last" = scout picks the match itself -> only a CONFIRMED last-over finish is made; unknown / not last over -> left for hand check
+            note("match=last: last-over finish pakka nahi (%s) -> highlight nahi bana, dashboard me check karo" % (e.get("overs_at_end") or "over counter nahi padha"), "warning")
+            hl_review.set_live("done", "Last over pakka nahi (over counter nahi padha) - highlight nahi banaya", vid=vid, force=True)
+            return
         if want and e["status"] == "pending" and e.get("start") is not None and e.get("end"):
             # a match number was asked for by hand -> no second step: make its highlights right away in this job
             note("match %s asked by hand -> making highlights now (%s - %s)" % (want, fmt(e["start"]), fmt(e["end"])))
