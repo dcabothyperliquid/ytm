@@ -53,9 +53,15 @@ PLAY_RX = re.compile(r"\b(?:four|six|run|runs|over|ball|wicket|single)\b|चौ�
 
 # clip lengths: (seconds before the event, seconds after)
 PAD = {"wicket": (6, 11), "six": (6, 9), "four": (5, 6), "noball": (4, 5), "wide": (3, 4), "dot": (3, 4)}
-# scoreboard mode: events sit at the moment the ball was HIT (see hl_scoreboard.align_events), so the clip is
-# "bowler runs in -> shot -> commentary of that ball" and then it cuts to the next four / six / wicket:
-PAD_SB = {"wicket": (4.5, 4.5), "six": (3.5, 5), "four": (3.5, 4.5), "noball": (9, 1.5), "wide": (9, 1.5), "dot": (3, 2)}   # t = the exact SHOT (video cut-away, refine_shots): run-up 3.5 s before, then flight + landing (six 8.5 s, four 8 s, wicket 9.5 s)
+# scoreboard mode (2026-11-16, Naem: "guess hatao, wo signal pakdo jo hamesha milta hai"): every four / six / wicket clip is anchored on the
+# SIX / FOUR / WICKET graphic, which shows on EVERY such ball. No camera cut-away detector, no per-match calibration (they were right on
+# one match and wrong on the next, and cut the run-up off):
+#   start = graphic onset - LEAD_GFX   (fixed, so the bowler's run-up is always in)
+#   end   = graphic onset + GFX_TAIL, then moved to the end of that ball's commentary sentence (snap_plan, every such clip)
+LEAD_GFX = {"six": 13.0, "four": 13.0, "wicket": 16.0}
+GFX_TAIL = 1.5
+# wide / no-ball / dot have no graphic: they stay on the estimated hit time (t_state - median score lag): (before, after)
+PAD_SB = {"noball": (9, 1.5), "wide": (9, 1.5), "dot": (3, 2)}
 SIX_REPLAY = 10             # extra seconds after a TOP six (replay usually follows within ~10-25 s)
 TOP_SIXES = 1
 MUST = ("wicket", "six", "noball", "wide")
@@ -74,12 +80,12 @@ SB_END_MAX = float(os.environ.get("HL_END_MAX", "40"))   # scoreboard mode: the 
 # LENGTH BUDGET (decided 2026-11-14 by Naem: 6-8 min highlight, "jyada lamba sahi nahi hota"):
 #   wickets / no-balls / toss / finish are NEVER dropped; 3+ consecutive boundaries (hat-trick of six / four) are never dropped;
 #   everything else is trimmed until the ESTIMATED final length (after replay cut + sentence snap) is <= HL_MAX_S.
-MAX_S = float(os.environ.get("HL_MAX_S", "540"))           # estimated final seconds -> real result lands in ~9-10 min (2026-11-15: 6-8 min felt short for a final, 19 min was far too long)
+MAX_S = float(os.environ.get("HL_MAX_S", "600"))           # estimated final seconds -> real result lands in ~9-10 min (2026-11-15: 6-8 min felt short for a final, 19 min was far too long)
 HARD_S = float(os.environ.get("HL_HARD_S", "570"))         # est. seconds above which streaks are thinned below a hat-trick
 MAX_CLIPS = int(os.environ.get("HL_MAX_CLIPS", "47"))        # ball clips (wickets + sixes + fours) in the highlight
 FEAT_SIX = int(os.environ.get("HL_FEAT_SIX", "5"))          # sixes that get their commentary finished (the rest: shot only)
 MIN_SIX = int(os.environ.get("HL_MIN_SIX", "30"))         # Naem: "20+ six to lena hi hoga" -> sixes are only dropped down to this many (loudest kept)
-SNAP_GROWTH = 1.3                                         # measured 2026-11-14: planned 7 s ball clips end up ~9.4 s after sentence snapping
+SNAP_GROWTH = 1.2                                         # measured 2026-11-14: planned 7 s ball clips end up ~9.4 s after sentence snapping
 STREAK_KEEP = 3                                           # this many consecutive six / four balls = a streak that is always shown
 
 
@@ -264,17 +270,26 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None, recap=None):
             return False
         return t >= hi - DEATH_FRAC * (hi - lo)
 
+    def ball_window(e):
+        """(start, end, gfx) of one ball's clip. four / six / wicket (scoreboard mode): graphic onset - LEAD_GFX .. onset + GFX_TAIL."""
+        if sb and e["kind"] in LEAD_GFX:
+            tb = e["t"] + hl_scoreboard.BACK_BY_KIND[e["kind"]]         # graphic onset (real one, or estimated for an event without a graphic)
+            return tb - LEAD_GFX[e["kind"]], tb + GFX_TAIL, True
+        pa, pb = (PAD_SB if sb else PAD)[e["kind"]]
+        return e["t"] - pa, e["t_end"] + pb, False
+
     clips = []
     for a, b in toss_clips:
         clips.append({"start": a, "end": b, "event": "toss", "must": True, "cost": b - a})
     for e in ev:
         if e["kind"] == "dot" and not (sb and e["t"] >= sb["last_over_start"] - 2.0 and e["t"] > sb["innings"][-1][0]):
             continue
-        pa, pb = (PAD_SB if sb else PAD)[e["kind"]]
-        if sb and not e.get("exact") and e["kind"] in ("six", "four", "wicket"):      # shot time only estimated from the banner (+-5 s): wider clip
-            pa, pb = pa + 2.5, pb + 2.5
-        c = {"start": max(0.0, e["t"] - pa), "end": min(end_a, e["t_end"] + pb), "event": e["kind"], "db": e["db"],
+        a, b, gfx = ball_window(e)
+        c = {"start": max(0.0, a), "end": min(end_a, b), "event": e["kind"], "db": e["db"],
              "must": e["kind"] in MUST, "t": e["t"], "text": e["text"]}
+        if gfx:
+            c["feat"] = True                                            # its commentary sentence is finished (snap_plan)
+            c["gfx"] = True                                             # ... but the run-up at the start is never trimmed
         if sb and e["t"] >= sb["last_over_start"] - 2.0 and e["t"] > sb["innings"][-1][0]:
             c["lastover"] = True
         clips.append(c)
@@ -297,9 +312,12 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None, recap=None):
             for c in hit:
                 c["lastover"] = True
         else:
-            pa, pb = (PAD_SB if sb else PAD)[e["kind"]]
-            clips.append({"start": max(0.0, e["t"] - pa), "end": min(end_a, e["t_end"] + pb), "event": e["kind"], "must": True,
-                          "db": float(e.get("db", 0.0)), "t": e["t"], "lastover": True})
+            a, b, gfx = ball_window(e)
+            cl = {"start": max(0.0, a), "end": min(end_a, b), "event": e["kind"], "must": True,
+                  "db": float(e.get("db", 0.0)), "t": e["t"], "lastover": True}
+            if gfx:
+                cl["gfx"] = True
+            clips.append(cl)
     if recap:                                                          # innings break: commentary of the first-innings score, 10-20 s
         clips.append({"start": recap[0], "end": recap[1], "event": "recap", "must": True, "db": 0.0, "t": recap[0], "feat": True})
     elif br_b - br_a > 20:
@@ -418,6 +436,10 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None, recap=None):
     drop_list(lambda c: c["event"] == "four", "four")
     thin(2)
     thin(1)                           # last resort: 1 ball per streak (the streak is still shown)
+    # length guard (2026-11-16): a four / six clip is ~15-18 s now (run-up + shot + that ball's commentary), so a boundary-heavy match
+    # can run long even under MAX_CLIPS -> quietest single fours first, then quietest single sixes (never below MIN_SIX), never wickets
+    drop_where(lambda c: c["event"] == "four" and c.get("streak", 1) == 1, "four", order=lambda c: (c.get("db", 0.0), c["start"]))
+    drop_where(lambda c: c["event"] == "six" and c.get("streak", 1) == 1, "six", order=lambda c: (c.get("db", 0.0), c["start"]))
     # featured = commentary finished to the end: every wicket + the FEAT_SIX loudest sixes + the replayed top sixes
     for c in clips:
         if c["event"] in ("wicket", "toss", "finish") or c.get("replay") or c.get("lastover"):
@@ -440,9 +462,10 @@ def plan_from_segments(segs, dur, target_s, energy=None, sb=None, recap=None):
             o["parts"] = o.get("parts", 1) + 1
             o["replay"] = bool(o.get("replay") or c.get("replay"))
             o["feat"] = bool(o.get("feat") or c.get("feat"))
+            o["gfx"] = bool(o.get("gfx") or c.get("gfx"))
         else:
             out.append({"start": c["start"], "end": c["end"], "event": c["event"], "parts": 1, "replay": bool(c.get("replay")),
-                        "feat": bool(c.get("feat"))})
+                        "feat": bool(c.get("feat")), "gfx": bool(c.get("gfx"))})
     total = sum(o["end"] - o["start"] for o in out)
     counts = {}
     for c in clips:
@@ -471,7 +494,7 @@ def snap_plan(plan, segs, dur):
         for s in segs:                                           # ---- end
             if s["start"] < b - 0.3 and s["end"] > b + 0.3:
                 fwd = s["end"] + SNAP_TAIL
-                if fwd - b <= (4.0 if o.get('event') == 'wicket' else SNAP_FWD_MAX):
+                if fwd - b <= (6.0 if o.get('event') == 'wicket' else SNAP_FWD_MAX):
                     b = min(dur, fwd)
                 else:
                     prev = [x for x in segs if x["end"] <= b - 0.3 and b - x["end"] <= 6.0 and x["end"] > a + 4.0]
@@ -481,7 +504,7 @@ def snap_plan(plan, segs, dur):
                 break
         for s in segs:                                           # ---- start
             if s["start"] < a - 0.3 and s["end"] > a + 0.3:
-                if s["end"] - a <= 1.5 and s["end"] + 0.1 < b - 3.0:
+                if s["end"] - a <= 1.5 and s["end"] + 0.1 < b - 3.0 and not o.get("gfx"):      # graphic-anchored clip: never trim its run-up
                     a = s["end"] + 0.1
                 elif a - s["start"] <= SNAP_BACK_MAX:
                     a = max(0.0, s["start"] - 0.3)
@@ -648,11 +671,10 @@ def anchor_events(events, spans):
     return moved
 
 
-# ---------------------------------------------------------------- exact shot time (video, not banner lag)
+# ---------------------------------------------------------------- video helpers (toss scene start)
+# 2026-11-16: the per-ball cut-away detector (shot_time / shot_cut_time / refine_shots) and the per-match calibration are GONE:
+# clips are anchored on the SIX / FOUR / WICKET graphic with a fixed lead (LEAD_GFX), see plan_from_segments.
 SHOT_FPS = 5
-SHOT_WB = 10.0              # look this far BEFORE the estimated time ...
-SHOT_WA = 5.0               # ... and this far after it for the shot
-SHOT_PIT = 0.06             # fraction of green-mat pixels in the middle band above which the frame is the wide pitch view
 
 
 def _small_frames(src, a, b, fps=SHOT_FPS, w=64, h=36):
@@ -665,139 +687,6 @@ def _small_frames(src, a, b, fps=SHOT_FPS, w=64, h=36):
         return np.zeros(0), np.zeros((0, h, w, 3), dtype=np.int16)
     fr = np.frombuffer(raw[:n * w * h * 3], dtype=np.uint8).reshape(n, h, w, 3).astype(np.int16)
     return a + np.arange(n) / float(fps), fr
-
-
-def shot_time(src, t0, wb=SHOT_WB, wa=SHOT_WA, min_t=0.0, need_replay=False):
-    """The broadcast shows the ball from the wide pitch view (green mat, bowler, batter) and cuts away (sky / outfield / close-up)
-    the moment the ball is hit. The SIX / FOUR / WICKET graphic comes 7-16 s later, so a fixed lag puts clips -9..+5 s off.
-    -> time of the LAST pitch-view -> cut-away before t0+wa (not inside a replay: the replay bar is on screen), nearest to t0; None if not found."""
-    a = max(0.0, t0 - wb - 2.0)
-    t, fr = _small_frames(src, a, t0 + wa + 2.0)
-    if len(t) < 12:
-        return None
-    R, G, B = fr[..., 0], fr[..., 1], fr[..., 2]
-    mat = ((G - R) > 45) & ((G - B) > 5) & (G > 110)
-    pit = mat[:, 8:28, :].mean(axis=(1, 2)) > SHOT_PIT
-    bar = (R[:, 33:36, 26:38].mean(axis=(1, 2)) > 185) & (B[:, 33:36, 52:63].mean(axis=(1, 2)) > 190)     # REPLAY bar (white middle, blue right)
-    if need_replay:                                                 # only when the estimate sits on a replay (live ball is before it)
-        near = (t >= t0 - 3.0) & (t <= t0 + 3.0)
-        if not bar[near].any():
-            return None
-    ps = np.array([pit[max(0, i - 1):i + 2].sum() >= 2 for i in range(len(pit))])
-    cands = []
-    for i in range(3, len(ps) - 4):
-        if ps[i - 3:i].all() and not ps[i:i + 4].any() and not bar[max(0, i - 3):i + 6].any():
-            cands.append(float(t[i]))
-    cands = [c for c in cands if c <= t0 + wa and c > min_t]       # one cut belongs to ONE ball (the next ball is >= ~8 s later)
-    if not cands:
-        return None
-    return min(cands, key=lambda c: abs(c - t0))
-
-
-CUT_T = 40.0                # mean abs pixel difference (0-255, 64x36 frames) of a hard camera cut; pans / zooms stay < 20, replay wipes are 2-5 frames long
-CUT_CLUSTER = 4.5           # s: cuts closer than this belong to the same cut-away sequence (shot -> boundary -> close-up)
-CUT_WINDOW = 14.0           # the SIX / FOUR / WICKET graphic shows at most this long after the shot
-
-
-def hard_cuts(src, a, b, fps=10):
-    """times of single-frame hard cuts in [a, b] (gradual wipes like the REPLAY swoosh are several frames long -> not counted)"""
-    t, fr = _small_frames(src, max(0.0, a), b, fps=fps)
-    if len(t) < 8:
-        return []
-    d = np.abs(np.diff(fr, axis=0)).mean(axis=(1, 2, 3))
-    out = []
-    for i in range(1, len(d) - 1):
-        if d[i] > CUT_T and d[i - 1] < 28.0 and d[i + 1] < 28.0:
-            out.append(float(t[i + 1]))
-    return out
-
-
-def shot_cut_time(src, t_banner):
-    """Exact moment of the shot from the VIDEO, anchored on the graphic: the wide pitch view cuts away the instant the ball is hit
-    (2026-11-15 North Goa final: graphic came only ~3.5 s after the cut, the old fixed 9.5 s back-offset put every clip ~6 s too early, so
-    clips opened on 10 s of players standing around). -> first cut of the LAST cut-away cluster before the graphic, or None."""
-    cuts = [c for c in hard_cuts(src, t_banner - CUT_WINDOW - 2.0, t_banner + 0.5) if t_banner - CUT_WINDOW <= c <= t_banner + 0.3]
-    if not cuts:
-        return None
-    first = cuts[-1]
-    for c in reversed(cuts[:-1]):
-        if first - c < CUT_CLUSTER:
-            first = c
-        else:
-            break
-    return first
-
-
-def refine_shots(src, events, log=None):
-    """move every six / four / wicket event onto its real shot time. -> (moved, not_found)
-    1) graphic known -> the video cut right before it (shot_cut_time);  2) old pitch-view detector;
-    3) events with no exact time are shifted by the delay measured on the exact ones (per VOD, not a fixed constant)."""
-    moved = nf = 0
-    prev = -1e9
-    for e in sorted(events, key=lambda x: x["t_hit"]):
-        if e["kind"] not in ("six", "four", "wicket"):
-            continue
-        st = None
-        if e.get("t_banner") is not None:
-            try:
-                st = shot_cut_time(src, float(e["t_banner"]))
-            except Exception as ex:                                 # noqa
-                st = None
-                if log:
-                    log("shot_cut_time failed %.0f: %s" % (e["t_banner"], ex))
-            if st is not None and st <= prev + 6.0:                 # two balls cannot be < 6 s apart: that cut belongs to the previous ball
-                st = None
-            if st is not None:
-                e["t_banner_est"] = e["t_hit"]
-                e["exact"] = True
-                e["t"] = e["t_end"] = e["t_hit"] = st
-                prev = st
-                moved += 1
-                continue
-        try:
-            st = shot_time(src, e["t_hit"], min_t=prev + 8.0)
-            if st is None:                                          # the estimate sat on the replay: the live ball is further back
-                st = shot_time(src, e["t_hit"], wb=20.0, wa=2.0, min_t=prev + 8.0)
-            if st is None:                                          # still nothing: the live ball is before a long replay
-                st = shot_time(src, e["t_hit"], wb=26.0, wa=-1.0, min_t=prev + 8.0, need_replay=True)
-        except Exception as ex:                                     # noqa
-            st = None
-            if log:
-                log("shot_time failed %.0f: %s" % (e["t_hit"], ex))
-        if st is None:
-            nf += 1
-            continue
-        e["t_banner_est"] = e["t_hit"]
-        e["exact"] = True
-        e["t"] = e["t_end"] = e["t_hit"] = st
-        prev = st
-        moved += 1
-    # per-VOD calibration: delay (graphic -> shot) and (score typed -> shot) measured on the exact events, applied to the rest
-    ex = [e for e in events if e.get("exact")]
-    if len(ex) >= 3:
-        back = {}
-        for k in ("six", "four", "wicket"):
-            v = sorted(e["t_banner"] - e["t"] for e in ex if e["kind"] == k and e.get("t_banner") is not None)
-            if len(v) >= 2 or (k == "four" and v):
-                back[k] = v[len(v) // 2]
-        allv = sorted(e["t_banner"] - e["t"] for e in ex if e.get("t_banner") is not None)
-        lagv = sorted(e["t_state"] - e["t"] for e in ex if e.get("t_state") is not None)
-        gen_back = allv[len(allv) // 2] if allv else None
-        lag = lagv[len(lagv) // 2] if lagv else None
-        if log:
-            log("calibration from %d exact shots: graphic->shot %s, score->shot %.1fs" % (len(ex), {k: round(v, 1) for k, v in back.items()}, lag if lag is not None else -1))
-        for e in events:
-            if e.get("exact"):
-                continue
-            if e.get("t_banner") is not None and (back.get(e["kind"]) is not None or gen_back is not None):
-                t = e["t_banner"] - (back.get(e["kind"]) if back.get(e["kind"]) is not None else gen_back)
-            elif e.get("t_state") is not None and lag is not None and not e.get("from_banner"):
-                t = e["t_state"] - lag
-            else:
-                continue
-            e["t"] = e["t_end"] = e["t_hit"] = max(0.0, t)
-    events.sort(key=lambda x: x["t"])
-    return moved, nf
 
 
 def refine_toss_start(src, ts):
@@ -832,16 +721,14 @@ def build_plan(H, wav, dur, db, target_min, hop=0.5, src=None):
             sb = None
         if sb and sum(1 for e in sb["events"] if e["kind"] != "dot") >= 4:
             try:
-                H.hl_review.set_live("transcribe", "Har shot ka sahi time video se pakad raha hai", force=True)
-                mv, nf = refine_shots(src, sb["events"], log=H.log)
-                H.log("exact shot time: %d events moved onto the real shot, %d kept on banner estimate" % (mv, nf))
+                H.hl_review.set_live("transcribe", "Toss scene ka start dhoondh raha hai", force=True)
                 if sb.get("toss_start") is not None:
                     t2 = refine_toss_start(src, float(sb["toss_start"]))
                     if t2 != sb["toss_start"]:
                         H.log("toss scene starts at %.1fs (banner was %.1fs, previous match footage before that)" % (t2, sb["toss_start"]))
                         sb["toss_start"] = t2
             except Exception as e:                                  # noqa -- banner estimates still make a plan
-                H.log("exact shot time failed:", e)
+                H.log("toss start refine failed:", e)
             recap = None
             try:                                                    # innings break: whisper only the break, find where the first-innings score is told
                 br_a, br_b = sb["break"]
