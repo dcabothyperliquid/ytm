@@ -50,6 +50,7 @@ env:
   HL_CHANNEL: ${{ vars.HL_CHANNEL || 'localmatchlive' }}
   HL_VIDEO: ${{ github.event.inputs.video || '' }}
   HL_SHORTS: ${{ github.event.inputs.shorts || '8' }}
+  HL_SHORTS_ENABLED: ${{ vars.HL_SHORTS_ENABLED || '0' }}   # shorts OFF; set repo variable HL_SHORTS_ENABLED=1 to re-enable
   HL_TARGET_MIN: ${{ github.event.inputs.target_min || '10' }}
   HL_MODEL: ${{ github.event.inputs.model || 'small' }}
   HL_MODE: ${{ github.event.inputs.mode || '' }}

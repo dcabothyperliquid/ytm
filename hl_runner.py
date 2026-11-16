@@ -27,6 +27,8 @@ import hl_cutter
 CHANNEL = os.environ.get("HL_CHANNEL", "localmatchlive").lstrip("@")
 MIN_MIN = float(os.environ.get("HL_MIN_MIN", "20"))          # ignore streams shorter than this (minutes)
 N_SHORTS = int(os.environ.get("HL_SHORTS", "8") or 8)
+# Shorts are OFF for now (Actions minutes/limit). Set HL_SHORTS_ENABLED=1 to turn them back on later.
+SHORTS_ENABLED = os.environ.get("HL_SHORTS_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 TARGET_MIN = float(os.environ.get("HL_TARGET_MIN", "10") or 10)
 MODEL = os.environ.get("HL_MODEL", "small") or "small"
 LANG = os.environ.get("HL_LANG", "hi") or None               # commentary language; "" = auto
@@ -678,7 +680,11 @@ def process(src, outdir, meta, offset=0.0):
     # ---- shorts: real stories only (over compilations / hat-trick / catch drop / last over)
     shorts, used = [], []
     heard_any = any(m["text"] for m in moments)
-    if heard_any:
+    if not SHORTS_ENABLED:                          # shorts disabled: highlights only
+        cands = []
+        log("shorts: disabled (HL_SHORTS_ENABLED=0) - highlights only")
+        note("shorts disabled - highlights only")
+    elif heard_any:
         cands = sorted(fifty + build_stories(moments, dur, [f["handled"] for f in fifty]),
                        key=lambda x: x["score"], reverse=True)
         log("stories found: %d" % len(cands))
