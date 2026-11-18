@@ -1664,6 +1664,11 @@ def run(_sleep=time.sleep, _read=None, _write=None, _relay_factory=None, _detect
                 st["last_check"] = int(now)
                 taken = {(cfg.get("relay%s" % n) or {}).get("video_id") for n in MANUAL_SLOTS} - {None}
                 relay.step([x for x in live if x["video_id"] not in taken] if taken else live, cfg, now)
+                if _relay_factory is None:
+                    try:
+                        auto_relay3(cfg, live, st, now, relay)
+                    except Exception as e:
+                        log("auto_relay3: %s" % str(e)[:100])
             except Exception as e:
                 errors = ["%s: %s" % (type(e).__name__, str(e)[:120])]
             if minutes_today(st, now) >= int(cfg.get("daily_cap_h", 20)) * 60 and not st.get("relay"):
@@ -1902,6 +1907,41 @@ def run2(_sleep=time.sleep, max_loops=None, slot=None):
     else:
         _clear_relay2(seq, slot)
     return 0
+
+
+def auto_relay3(cfg, live, st, now, relay=None):
+    """Relay 3 auto: while Relay mode is Auto and cfg.r3_auto is on (default), hand relay 3 the next live match that is NOT in
+    auto_skip (cricket), not carried by relay 1/2 and not tried in the last 30 min. Relay 1 always picks first (channel priority);
+    this runs after it. Writes cfg.relay3 (same request relay 3's dashboard button writes) and dispatches yt-mirror3.yml."""
+    if cfg.get("mode") == "manual" or not cfg.get("r3_auto", True):
+        return
+    if (cfg.get("relay3") or {}).get("video_id"):
+        return
+    skip = [k.strip().lower() for k in (cfg.get("auto_skip") or "").split(",") if k.strip()]
+    taken = {(st.get("relay") or {}).get("video_id"), (cfg.get("relay2") or {}).get("video_id")} - {None}
+    tried = st.setdefault("r3_tried", {})
+    for v in [v for v, t in tried.items() if now - t > 1800]:
+        tried.pop(v, None)
+    for c in live:
+        v = c["video_id"]
+        if v in taken or v in tried or (skip and any(k in (c.get("title") or "").lower() for k in skip)):
+            continue
+        if relay is not None and relay._blocked(v, now):
+            continue
+        tried[v] = now
+        fresh, sha = read_json(CFG_PATH)
+        if not fresh or (fresh.get("relay3") or {}).get("video_id"):
+            return
+        fresh["relay3"] = {"video_id": v, "title": c.get("title", ""), "channel": c.get("channel", ""), "handle": c.get("handle", ""),
+                           "channel_id": c.get("channel_id", ""), "url": c.get("url", ""), "seq": int(now * 1000), "auto": True}
+        write_json(CFG_PATH, fresh, sha, "ytm relay3 auto")
+        log("relay3 auto: %s" % c.get("title", v)[:80])
+        if os.environ.get("GITHUB_ACTIONS"):
+            try:
+                gh("POST", "actions/workflows/%s/dispatches" % _wf_file("3"), {"ref": "main"})
+            except Exception as e:
+                log("relay3 dispatch failed: %s" % str(e)[:100])
+        return
 
 
 def cfg_poll(st):
