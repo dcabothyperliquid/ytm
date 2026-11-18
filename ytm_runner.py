@@ -1526,7 +1526,7 @@ class Relay:
             return
         skip = [k.strip().lower() for k in (cfg.get("auto_skip") or "").split(",") if k.strip()]
         for c in live:
-            if skip and any(k in (c.get("title") or "").lower() for k in skip):
+            if skip_hit(c, skip):
                 continue                                  # e.g. cricket: never auto, only via manual Relay / Mirror ab
             if not self._blocked(c["video_id"], now):
                 self.start(c)
@@ -1909,6 +1909,16 @@ def run2(_sleep=time.sleep, max_loops=None, slot=None):
     return 0
 
 
+def skip_hit(c, skip):
+    """True if live match c matches an auto_skip word in its title OR channel name OR handle (a Marathi/Hindi title may not say
+    'cricket' at all, but the channel does). 'cricket' also covers the Hindi/Marathi spelling."""
+    if not skip:
+        return False
+    words = list(skip) + (["क्रिकेट"] if "cricket" in skip else [])
+    text = " ".join(str(c.get(k) or "") for k in ("title", "channel", "handle")).lower()
+    return any(w in text for w in words)
+
+
 def auto_relay3(cfg, live, st, now, relay=None):
     """Relay 3 auto: while Relay mode is Auto and cfg.r3_auto is on (default), hand relay 3 the next live match that is NOT in
     auto_skip (cricket), not carried by relay 1/2 and not tried in the last 30 min. Relay 1 always picks first (channel priority);
@@ -1924,7 +1934,7 @@ def auto_relay3(cfg, live, st, now, relay=None):
         tried.pop(v, None)
     for c in live:
         v = c["video_id"]
-        if v in taken or v in tried or (skip and any(k in (c.get("title") or "").lower() for k in skip)):
+        if v in taken or v in tried or skip_hit(c, skip):
             continue
         if relay is not None and relay._blocked(v, now):
             continue
