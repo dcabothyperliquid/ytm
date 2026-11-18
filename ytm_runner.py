@@ -1526,8 +1526,8 @@ class Relay:
             return
         skip = [k.strip().lower() for k in (cfg.get("auto_skip") or "").split(",") if k.strip()]
         for c in live:
-            if skip_hit(c, skip):
-                continue                                  # e.g. cricket: never auto, only via manual Relay / Mirror ab
+            if skip and not skip_hit(c, skip):
+                continue                                  # Relay 1 auto = ONLY cricket words; other sports go to Relay 3 auto / manual
             if not self._blocked(c["video_id"], now):
                 self.start(c)
                 if self.st.get("relay"):
@@ -1910,7 +1910,7 @@ def run2(_sleep=time.sleep, max_loops=None, slot=None):
 
 
 def skip_hit(c, skip):
-    """True if live match c matches an auto_skip word in its title OR channel name OR handle (a Marathi/Hindi title may not say
+    """True if live match c is a cricket match, i.e. matches an auto_skip word in its title OR channel name OR handle (a Marathi/Hindi title may not say
     'cricket' at all, but the channel does). 'cricket' also covers the Hindi/Marathi spelling."""
     if not skip:
         return False
