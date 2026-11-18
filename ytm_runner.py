@@ -27,9 +27,25 @@ REPO = os.environ.get("GITHUB_REPOSITORY", "dcabothyperliquid/ytm")
 BRANCH = "ytm-data"
 CFG_PATH, ST_PATH = "ytm_config.json", "ytm_state.json"
 ST2_PATH = "ytm_state2.json"   # relay 2 (second parallel relay on the same channel, manual only)
-SLOT = os.environ.get("YTM_SLOT", "1")                       # "2" = relay-2 job: own stream key, own state, never touches relay 1's broadcast
-FRAME_FILE = "ytm_frame.jpg" if SLOT != "2" else "ytm_frame2.jpg"
+ST3_PATH = "ytm_state3.json"   # relay 3 (third parallel relay, same rules as relay 2)
+SLOT = os.environ.get("YTM_SLOT", "1")                       # "2"/"3" = manual relay job: own stream key, own state, never touches relay 1's broadcast
+FRAME_FILE = "ytm_frame.jpg" if SLOT == "1" else "ytm_frame%s.jpg" % SLOT
 STREAM2_TITLE = "YTM Relay 2"
+MANUAL_SLOTS = ("2", "3")
+
+
+def _sfx(slot=None):
+    """env-var suffix of a slot: '' for relay 1, '_2' / '_3' for the manual relays"""
+    slot = slot or SLOT
+    return "" if slot == "1" else "_" + slot
+
+
+def _st_path(slot):
+    return {"1": ST_PATH, "2": ST2_PATH, "3": ST3_PATH}[slot]
+
+
+def _wf_file(slot):
+    return "yt-mirror%s.yml" % ("" if slot == "1" else slot)
 MAX_RUN_MIN = int(os.environ.get("MAX_RUN_MIN", "350"))
 ENDED_GRACE = 90          # s the source may be missing from the live list before we stop
 RETRY_COOLDOWN = 120
@@ -376,7 +392,7 @@ DIAG = {}
 
 
 def _slot_key():
-    return os.environ.get("YT_STREAM_KEY_2" if SLOT == "2" else "YT_STREAM_KEY", "").strip()
+    return os.environ.get("YT_STREAM_KEY" + _sfx(), "").strip()
 
 
 def _my_stream(items):
@@ -419,7 +435,7 @@ def _ensure_broadcast(call, src_title, channel):
         ls = call("GET", "liveStreams", {"part": "snippet,status,cdn", "mine": "true", "maxResults": 50}).get("items", [])
         lb = call("GET", "liveBroadcasts", {"part": "snippet,status,contentDetails", "mine": "true", "maxResults": 25}).get("items", [])
         mine = _my_stream(ls)
-        if SLOT == "2" and not mine:
+        if SLOT != "1" and not mine:
             return "wait"                                   # never guess on relay 2: it could hijack relay 1's broadcast
         if mine:
             DIAG["sid"] = mine["id"]
@@ -486,7 +502,7 @@ def _prepare(call, src_title, channel):
     if not ls:
         return "nostream"
     mine = _my_stream(ls)
-    if SLOT == "2" and not mine:
+    if SLOT != "1" and not mine:
         return "nostream"                                    # never guess on relay 2
     st = mine or next((i for i in ls if i["status"].get("streamStatus") == "active"), ls[0])
     if mine:
@@ -544,7 +560,7 @@ def set_caption(src_title, channel=""):
             return json.loads(r.read() or b"{}")
 
     sid = _my_stream_id(call)
-    if SLOT == "2" and not sid:
+    if SLOT != "1" and not sid:
         return "wait"
     items = call("GET", "liveBroadcasts", {"part": "snippet,status,contentDetails", "broadcastStatus": "active", "maxResults": 10}).get("items", [])
     if sid:
@@ -588,7 +604,7 @@ def check_live():
             return json.loads(r.read() or b"{}")
     try:
         sid = _my_stream_id(call)
-        if SLOT == "2" and not sid:
+        if SLOT != "1" and not sid:
             return None
         items = call("GET", "liveBroadcasts", {"part": "id,status,contentDetails", "mine": "true", "maxResults": 10}).get("items", [])
     except Exception as e:
@@ -618,7 +634,7 @@ def end_broadcast():
     n = bad = 0
     try:
         sid = _my_stream_id(call)
-        if SLOT == "2" and not sid:
+        if SLOT != "1" and not sid:
             return "skip"                                    # cannot tell which broadcast is ours: do not end relay 1's
         items = call("GET", "liveBroadcasts", {"part": "id,status,contentDetails", "broadcastStatus": "active", "maxResults": 10}).get("items", [])
         if sid:
@@ -799,36 +815,38 @@ def logo_probe(hls):
         return None
 
 
-FB_CFG = {"r1": True, "r2": True}      # dashboard switches (cfg["fb"]); default on, so the secret alone still works
+FB_CFG = {"r1": True, "r2": True, "r3": True}      # dashboard switches (cfg["fb"]); default on, so the secret alone still works
 
 
 def fb_key_set():
-    return bool(os.environ.get("FB_STREAM_KEY_2" if SLOT == "2" else "FB_STREAM_KEY", "").strip())
+    return bool(os.environ.get("FB_STREAM_KEY" + _sfx(), "").strip())
 
 
-YT_CFG = {"r1": True, "r2": True}      # dashboard switches (cfg["yt"]): YouTube output per relay, default on
+YT_CFG = {"r1": True, "r2": True, "r3": True}      # dashboard switches (cfg["yt"]): YouTube output per relay, default on
 
 
 def fb_cfg_apply(cfg):
     """read the dashboard's per-platform switches (cfg.fb / cfg.yt) into the module state"""
     f = (cfg or {}).get("fb") or {}
-    FB_CFG["r1"], FB_CFG["r2"] = bool(f.get("r1", True)), bool(f.get("r2", True))
+    for k in ("r1", "r2", "r3"):
+        FB_CFG[k] = bool(f.get(k, True))
     y = (cfg or {}).get("yt") or {}
-    YT_CFG["r1"], YT_CFG["r2"] = bool(y.get("r1", True)), bool(y.get("r2", True))
+    for k in ("r1", "r2", "r3"):
+        YT_CFG[k] = bool(y.get(k, True))
 
 
 def outputs():
     """-> (yt, fb_url). At least one output is always on: if the dashboard switched both off, YouTube stays (Stop is the way to end a relay)."""
     fb = fb_rtmp()
-    return (bool(YT_CFG["r2" if SLOT == "2" else "r1"]) or not fb), fb
+    return (bool(YT_CFG["r" + SLOT]) or not fb), fb
 
 
 def fb_rtmp():
     """Facebook Page output (opt-in). Returns rtmps URL or None.
-    Relay 1 uses secret FB_STREAM_KEY, relay 2 uses FB_STREAM_KEY_2 (a live key can only carry one stream at a time,
+    Relay 1 uses secret FB_STREAM_KEY, relay 2 FB_STREAM_KEY_2, relay 3 FB_STREAM_KEY_3 (a live key can only carry one stream at a time,
     so relay 2 needs its own FB key/live). Unset = no Facebook for that relay. FB_ENABLE=off kills both."""
-    key = os.environ.get("FB_STREAM_KEY_2" if SLOT == "2" else "FB_STREAM_KEY", "").strip()
-    if not key or os.environ.get("FB_ENABLE", "on").strip().lower() == "off" or not FB_CFG["r2" if SLOT == "2" else "r1"]:
+    key = os.environ.get("FB_STREAM_KEY" + _sfx(), "").strip()
+    if not key or os.environ.get("FB_ENABLE", "on").strip().lower() == "off" or not FB_CFG["r" + SLOT]:
         return None
     base = os.environ.get("FB_RTMP_BASE", "rtmps://live-api-s.facebook.com:443/rtmp").rstrip("/")
     return base + "/" + key
@@ -1192,7 +1210,7 @@ class Relay:
             except Exception as e:
                 log("end_broadcast: %s" % str(e)[:100])
                 res = "error"
-            if res == "error" and SLOT != "2":
+            if res == "error" and SLOT == "1":
                 # old broadcast is still LIVE on YouTube: the next match must NOT stream into it (two matches in one video, old title)
                 self.st["pending_end"] = self.st.get("pending_end") or int(time.time())
             elif res == "done":
@@ -1210,7 +1228,7 @@ class Relay:
         """True = fine to start. After a failed end_broadcast (YouTube login expired / quota / API hiccup) the OLD broadcast is
         still live: retry ending it first, and if that still fails do not start the next match (it would be mixed into the old
         video under the old title). Transient failures give up after 5 tries so a relay is never blocked forever."""
-        if not self.st.get("pending_end") or SLOT == "2":
+        if not self.st.get("pending_end") or SLOT != "1":
             return True
         try:
             res = end_broadcast()
@@ -1506,7 +1524,10 @@ class Relay:
                 if c:
                     self.start(c)
             return
+        skip = [k.strip().lower() for k in (cfg.get("auto_skip") or "").split(",") if k.strip()]
         for c in live:
+            if skip and any(k in (c.get("title") or "").lower() for k in skip):
+                continue                                  # e.g. cricket: never auto, only via manual Relay / Mirror ab
             if not self._blocked(c["video_id"], now):
                 self.start(c)
                 if self.st.get("relay"):
@@ -1641,8 +1662,8 @@ def run(_sleep=time.sleep, _read=None, _write=None, _relay_factory=None, _detect
             try:
                 live, errors = det.live(cfg)
                 st["last_check"] = int(now)
-                r2v = (cfg.get("relay2") or {}).get("video_id")
-                relay.step([x for x in live if x["video_id"] != r2v] if r2v else live, cfg, now)
+                taken = {(cfg.get("relay%s" % n) or {}).get("video_id") for n in MANUAL_SLOTS} - {None}
+                relay.step([x for x in live if x["video_id"] not in taken] if taken else live, cfg, now)
             except Exception as e:
                 errors = ["%s: %s" % (type(e).__name__, str(e)[:120])]
             if minutes_today(st, now) >= int(cfg.get("daily_cap_h", 20)) * 60 and not st.get("relay"):
@@ -1692,107 +1713,115 @@ def _mk_call():
     return call
 
 
-def resolve_rtmp2():
-    """-> (rtmp url, stream key). YT_STREAM_KEY_2 secret if set, else a reusable stream titled 'YTM Relay 2' on our channel
+def resolve_rtmp2(slot=None):
+    """-> (rtmp url, stream key). YT_STREAM_KEY_<slot> secret if set, else a reusable stream titled 'YTM Relay <slot>' on our channel
     (created once through the API with the existing OAuth secrets; its key is never printed)."""
     base = os.environ.get("YT_RTMP_BASE", "rtmp://a.rtmp.youtube.com/live2").rstrip("/")
-    key = os.environ.get("YT_STREAM_KEY_2", "").strip()
+    slot = slot or SLOT
+    title = "YTM Relay " + slot
+    key = os.environ.get("YT_STREAM_KEY" + _sfx(slot), "").strip()
     if key:
         return base + "/" + key, key
     call = _mk_call()
     if not call:
         return None, None
     ls = call("GET", "liveStreams", {"part": "snippet,cdn", "mine": "true", "maxResults": 50}).get("items", [])
-    it = next((i for i in ls if (i.get("snippet") or {}).get("title") == STREAM2_TITLE), None)
+    it = next((i for i in ls if (i.get("snippet") or {}).get("title") == title), None)
     if it is None:
         it = call("POST", "liveStreams", {"part": "snippet,cdn,contentDetails,status"},
-                  {"snippet": {"title": STREAM2_TITLE},
+                  {"snippet": {"title": title},
                    "cdn": {"frameRate": "variable", "ingestionType": "rtmp", "resolution": "variable"},
                    "contentDetails": {"isReusable": True}})
-        log("relay 2: created reusable stream '%s'" % STREAM2_TITLE)
+        log("relay %s: created reusable stream '%s'" % (slot, title))
     ing = it["cdn"]["ingestionInfo"]
     return ing["ingestionAddress"].rstrip("/") + "/" + ing["streamName"], ing["streamName"]
 
 
-def _clear_relay2(seq):
+def _clear_relay2(seq, slot=None):
     """relay 2 is over: drop the request from the config (only if it is still OUR request), so relay 1 may pick that match again."""
+    rk = "relay" + (slot or SLOT)
     try:
         cfg, sha = read_json(CFG_PATH)
-        if cfg and (cfg.get("relay2") or {}).get("seq") == seq:
-            cfg["relay2"] = None
-            write_json(CFG_PATH, cfg, sha, "ytm relay2 done")
+        if cfg and (cfg.get(rk) or {}).get("seq") == seq:
+            cfg[rk] = None
+            write_json(CFG_PATH, cfg, sha, "ytm %s done" % rk)
     except Exception as e:
         log("clear relay2: %s" % str(e)[:100])
 
 
-def gate2():
+def gate2(slot=None):
     out = "false"
     try:
         cfg, _ = read_json(CFG_PATH)
-        if cfg and (cfg.get("relay2") or {}).get("video_id"):
+        if cfg and (cfg.get("relay" + (slot or SLOT)) or {}).get("video_id"):
             out = "true"
     except Exception as e:
         log("gate2 error: %s" % e)
-    log("gate2 go=%s" % out)
+    log("gate%s go=%s" % (slot or SLOT, out))
     if os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
             f.write("go=%s\n" % out)
     return 0
 
 
-def run2(_sleep=time.sleep, max_loops=None):
+def run2(_sleep=time.sleep, max_loops=None, slot=None):
     """One manually chosen live -> second stream of the same channel. Ends when the match ends, the dashboard stops it
     (cfg.relay2 removed / replaced) or the 6h job limit hits. No auto-pick, no failover, no chaining."""
+    slot = slot or SLOT
+    rk, stp = "relay" + slot, _st_path(slot)
     cfg, _ = read_json(CFG_PATH)
     cfg = cfg or {}
     fb_cfg_apply(cfg)                                       # dashboard platform switches BEFORE the first ffmpeg spawn
-    r2 = cfg.get("relay2") or {}
+    r2 = cfg.get(rk) or {}
     if not r2.get("video_id"):
-        log("relay2: no request -> exit")
+        log("relay%s: no request -> exit" % slot)
         return 0
     seq = r2.get("seq")
-    st, st_sha = read_json(ST2_PATH)
+    st, st_sha = read_json(stp)
     st = st or {}
     st["fb_key"] = fb_key_set()
-    st.update(slot=2, run_started=int(time.time()), status="starting", error="")
+    st.update(slot=int(slot), run_started=int(time.time()), status="starting", error="")
     if st.get("relay"):                                    # interrupted previous run
         st.setdefault("history", []).insert(0, {**{k: st["relay"].get(k) for k in ("video_id", "title", "channel", "started")},
                                                 "ended": int(time.time()), "outcome": "interrupted", "note": "job restarted"})
         st["relay"] = None
 
-    def save(msg="ytm relay2 state"):
+    def save(msg="ytm %s state" % rk):
         nonlocal st_sha
         try:
-            st_sha = write_json(ST2_PATH, st, st_sha, msg)
+            st_sha = write_json(stp, st, st_sha, msg)
         except Exception as e:
-            log("relay2 state write failed: %s" % e)
+            log("%s state write failed: %s" % (rk, e))
 
-    s1, _ = read_json(ST_PATH)
-    if ((s1 or {}).get("relay") or {}).get("video_id") == r2["video_id"]:
-        log("relay2: relay 1 already carries this match -> exit")
-        st.update(status="idle", error="Relay 1 pe ye match pehle se chal raha hai", heartbeat=0)
-        save()
-        _clear_relay2(seq)
-        return 0
+    for other in ("1", "2", "3"):                          # another relay already carries this match -> never double-stream it
+        if other == slot:
+            continue
+        so, _ = read_json(_st_path(other))
+        if ((so or {}).get("relay") or {}).get("video_id") == r2["video_id"] and (so or {}).get("status") in ("relaying", "starting"):
+            log("%s: relay %s already carries this match -> exit" % (rk, other))
+            st.update(status="idle", error="Relay %s pe ye match pehle se chal raha hai" % other, heartbeat=0)
+            save()
+            _clear_relay2(seq, slot)
+            return 0
     cap = int(cfg.get("daily_cap_h", 20)) * 60
     if minutes_today(st) >= cap:
-        log("relay2: daily cap reached -> exit")
-        st.update(status="idle", error="Relay 2 ka daily cap poora ho gaya", heartbeat=0)
+        log("%s: daily cap reached -> exit" % rk)
+        st.update(status="idle", error="Relay %s ka daily cap poora ho gaya" % slot, heartbeat=0)
         save()
-        _clear_relay2(seq)
+        _clear_relay2(seq, slot)
         return 0
     try:
-        rtmp, key = resolve_rtmp2()
+        rtmp, key = resolve_rtmp2(slot)
     except Exception as e:
         rtmp, key = None, None
-        log("relay2 stream setup failed: %s" % str(e)[:160])
+        log("%s stream setup failed: %s" % (rk, str(e)[:160]))
     if not rtmp:
-        st.update(status="idle", error="Relay 2 stream nahi ban paya (OAuth secrets / YT_STREAM_KEY_2 check karo)", heartbeat=0)
+        st.update(status="idle", error="Relay %s stream nahi ban paya (OAuth secrets / YT_STREAM_KEY%s check karo)" % (slot, _sfx(slot)), heartbeat=0)
         save()
-        _clear_relay2(seq)
+        _clear_relay2(seq, slot)
         return 1
     print("::add-mask::" + key, flush=True)                 # public repo: keep the key out of the Actions log
-    os.environ["YT_STREAM_KEY_2"] = key
+    os.environ["YT_STREAM_KEY" + _sfx(slot)] = key
     signal.signal(signal.SIGTERM, lambda *a: _stop.update(flag=True))
     relay = Relay(st, rtmp)
     relay.manual = True
@@ -1835,21 +1864,21 @@ def run2(_sleep=time.sleep, max_loops=None):
                 c2 = read_json(CFG_PATH)[0] or {}
                 fb_cfg_apply(c2)
                 relay.fb_sync()
-                cur = c2.get("relay2") or {}
+                cur = c2.get(rk) or {}
                 cap = int(c2.get("daily_cap_h", cap // 60)) * 60
             except Exception:
                 cur = {"seq": seq}                          # GitHub hiccup: keep going
             if cur.get("seq") != seq:
                 reason = "stopped"
-                relay.stop("stopped", "relay 2 stop")
+                relay.stop("stopped", "relay %s stop" % slot)
                 break
         if st.get("relay") and minutes_today(st, now) >= cap:
-            reason = "Relay 2 ka daily cap poora ho gaya"
+            reason = "Relay %s ka daily cap poora ho gaya" % slot
             relay.stop("stopped", "daily cap")
             break
         if st.get("relay") and not queued and now >= chain_at and os.environ.get("GITHUB_ACTIONS"):
             queued = True
-            ensure_next_queued(WORKFLOW2_FILE)               # waits behind this run (concurrency group), takes over at the limit
+            ensure_next_queued(_wf_file(slot))               # waits behind this run (concurrency group), takes over at the limit
         st.update(status="relaying" if st.get("relay") else "starting", heartbeat=int(now))
         if now - last_write >= HEARTBEAT or loops % 6 == 0:
             last_write = now
@@ -1866,12 +1895,12 @@ def run2(_sleep=time.sleep, max_loops=None):
         else:
             relay.stop("ended", "cancelled")
     st.update(status="idle", heartbeat=0, error="" if reason in ("match ended", "stopped") else reason)
-    save("ytm relay2 final")
+    save("ytm %s final" % rk)
     if chained:
         if os.environ.get("GITHUB_ACTIONS"):
-            ensure_next_queued(WORKFLOW2_FILE)              # no-op if the successor is already waiting
+            ensure_next_queued(_wf_file(slot))              # no-op if the successor is already waiting
     else:
-        _clear_relay2(seq)
+        _clear_relay2(seq, slot)
     return 0
 
 
@@ -1884,10 +1913,11 @@ if __name__ == "__main__":
     if _cmd == "endlive":                       # one-off: complete any ACTIVE broadcast on our channel
         print("endlive:", end_broadcast())
         sys.exit(0)
-    if _cmd == "gate2":
-        sys.exit(gate2())
-    if _cmd == "run2":
-        SLOT = "2"
-        FRAME_FILE = "ytm_frame2.jpg"
-        sys.exit(run2())
+    if _cmd in ("gate2", "gate3"):
+        SLOT = _cmd[-1]
+        sys.exit(gate2(SLOT))
+    if _cmd in ("run2", "run3"):
+        SLOT = _cmd[-1]
+        FRAME_FILE = "ytm_frame%s.jpg" % SLOT
+        sys.exit(run2(slot=SLOT))
     sys.exit(gate() if _cmd == "gate" else run())
