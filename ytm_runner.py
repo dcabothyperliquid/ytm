@@ -572,11 +572,17 @@ def set_caption(src_title, channel=""):
         return _ensure_broadcast(call, src_title, channel)
     it = items[0]
     title, desc = caption_from(src_title, channel)
-    capt = DIAG.setdefault("capt_ids", set())
-    if it["id"] not in capt:                                # PUT costs 50 quota units: once per broadcast, never per tick
+    capt = DIAG.setdefault("capt_ids", {})
+    if isinstance(capt, set):                               # (older runs kept a set of ids)
+        capt = DIAG["capt_ids"] = {i: None for i in capt}
+    if capt.get(it["id"]) != title:                         # PUT costs 50 quota units: once per (broadcast, title), never per tick
+        # FIX: failover to ANOTHER match can reuse the still-live broadcast. It was captioned once (old match) and then skipped
+        # forever, so the new match streamed under the old title/thumbnail. Now a changed source title re-captions it.
         sn = {"title": title, "description": desc, "scheduledStartTime": it["snippet"]["scheduledStartTime"]}
         call("PUT", "liveBroadcasts", {"part": "snippet"}, {"id": it["id"], "snippet": sn})
-        capt.add(it["id"])
+        if capt.get(it["id"]) is not None:
+            DIAG.setdefault("thumb_try", {}).pop(it["id"], None)   # new match -> new thumbnail too
+        capt[it["id"]] = title
         log("caption set: " + title)
     th = DIAG.setdefault("thumb_try", {})
     if th.get(it["id"], 0) < 3 and th.get(it["id"], 0) >= 0:      # up to 3 tries; -1 = done
@@ -1205,17 +1211,7 @@ class Relay:
                 self.proc.kill()
         self.proc = None
         if outcome in ("stopped", "ended"):          # not for "interrupted" (job chain resumes) / failover
-            try:
-                res = end_broadcast()
-            except Exception as e:
-                log("end_broadcast: %s" % str(e)[:100])
-                res = "error"
-            if res == "error" and SLOT == "1":
-                # old broadcast is still LIVE on YouTube: the next match must NOT stream into it (two matches in one video, old title)
-                self.st["pending_end"] = self.st.get("pending_end") or int(time.time())
-            elif res == "done":
-                self.st.pop("pending_end", None)
-                self.st.pop("pending_end_tries", None)
+            self._end_yt()
         if outcome == "ended":                        # match finished by itself -> highlights now (not on manual/cap stop)
             trigger_highlights()
         self.st.setdefault("history", []).insert(0, {
@@ -1223,6 +1219,21 @@ class Relay:
             "started": r.get("started"), "ended": int(time.time()), "outcome": outcome, "note": note})
         del self.st["history"][30:]
         self.st["relay"] = None
+
+    def _end_yt(self):
+        """Complete our live YouTube broadcast. On failure (relay 1) remember it: the next match must not stream into it."""
+        try:
+            res = end_broadcast()
+        except Exception as e:
+            log("end_broadcast: %s" % str(e)[:100])
+            res = "error"
+        if res == "error" and SLOT == "1":
+            # old broadcast is still LIVE on YouTube: the next match must NOT stream into it (two matches in one video, old title)
+            self.st["pending_end"] = self.st.get("pending_end") or int(time.time())
+        elif res == "done":
+            self.st.pop("pending_end", None)
+            self.st.pop("pending_end_tries", None)
+        return res
 
     def _clear_stale(self):
         """True = fine to start. After a failed end_broadcast (YouTube login expired / quota / API hiccup) the OLD broadcast is
@@ -1286,6 +1297,10 @@ class Relay:
         seg = segs[0] if segs else (title or "")
         return set(re.findall(r"[a-z0-9]+", seg.lower())) - {"live", "match", "vs", "v", "the", "of"}
 
+    def _same_match(self, cur, c):
+        a, b = self._tok(cur.get("title")), self._tok(c.get("title"))
+        return bool(a and b) and len(a & b) / float(len(a | b) or 1) >= 0.6
+
     def _pick_alt(self, cur, now):
         """Best replacement source: same match (similar first title segment) first, then others in channel-priority order."""
         ct = self._tok(cur.get("title"))
@@ -1301,7 +1316,13 @@ class Relay:
         r = dict(self.st.get("relay") or {})
         now = time.time()
         self._finish(outcome, note)
+        ended = False
         for c in ([] if getattr(self, "manual", False) else self._pick_alt(r, now)):
+            if not ended and not self._same_match(r, c):
+                # FIX: "failed" failover left the old broadcast LIVE -> the other match was relayed into it under the OLD match's name.
+                # Different match = close the old broadcast first (a fresh one with the right title is created for it).
+                self._end_yt()
+                ended = True
             self.start(c)
             if self.st.get("relay"):
                 self.st["relay"]["failover_from"] = r.get("video_id")
