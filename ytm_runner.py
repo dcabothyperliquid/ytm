@@ -51,6 +51,8 @@ ENDED_GRACE = 90          # s the source may be missing from the live list befor
 RETRY_COOLDOWN = 120
 MAX_ATTEMPTS = 3
 MAX_RESTARTS = 8
+RETRY_WINDOW = int(os.environ.get("YTM_RETRY_WINDOW", "900"))   # s a dropped source is retried before we give up and take another match
+RUN_OK_SECS = 120         # ffmpeg that ran this long counts as healthy (drop timer resets)
 KICK_DOWN_SECS = int(os.environ.get("YTM_KICK_DOWN", "60"))   # ingest pause so YouTube sees a fresh stream start (auto-start)
 STALL_SECS = 30           # ffmpeg output time not advancing this long -> source is stuck -> recover/failover
 PROBE_RETRIES = 3         # consecutive failed probes (5s apart) before giving up on a source
@@ -1282,7 +1284,7 @@ class Relay:
         self.proc = self._spawn(hls, c)
         self.st["relay"] = {"video_id": c["video_id"], "title": c["title"], "channel": c["channel"],
                             "handle": c.get("handle") or "", "channel_id": c.get("channel_id") or "",
-                            "url": c["url"], "started": int(time.time()), "not_live_since": None, "yt_off": not outputs()[0]}
+                            "url": c["url"], "started": int(time.time()), "spawned_at": int(time.time()), "not_live_since": None, "yt_off": not outputs()[0]}
         if prep == "busy":
             self.st["relay"]["kick_early"] = True
 
@@ -1369,25 +1371,28 @@ class Relay:
             log("ffmpeg exit %s" % self.proc.poll())
             self.proc = None
             r["retry_at"], r["probe_fail"] = 0, 0
+            if now - r.get("spawned_at", r.get("started", now)) > RUN_OK_SECS:
+                r["down_since"] = None                       # it ran fine for a while: this is a fresh drop, not a crash loop
+            r["down_since"] = r.get("down_since") or now
         elif now < r.get("retry_at", 0):
-            return                                           # waiting for the next quick probe retry
+            return                                           # waiting for the next retry
         try:
             is_live, hls = self._probe(r["url"])
         except Exception as e:
             is_live, hls = None, None
             log("probe error: %s" % str(e)[:100])
-        if is_live and hls and self.restarts < MAX_RESTARTS:
+        if is_live is False:
+            self._failover("ended", "source ended")          # really over -> next match
+        elif now - r.get("down_since", now) > RETRY_WINDOW:
+            self._failover("failed", "source not back in %ds" % RETRY_WINDOW)
+        elif is_live and hls:
+            # SIMPLE RULE: source dropped but its live is still on -> relay the SAME match again (no switching to another match)
             self.restarts += 1
-            log("source still live -> restart ffmpeg (%d)" % self.restarts)
+            log("source still live -> restart same match (%d)" % self.restarts)
+            r["spawned_at"] = now
             self.proc = self._spawn(hls)
-        elif is_live is False:
-            if not self._failover("ended", "source ended"):
-                pass
-        elif r.get("probe_fail", 0) + 1 < PROBE_RETRIES and is_live is None:
-            r["probe_fail"] = r.get("probe_fail", 0) + 1
-            r["retry_at"] = now + 5
         else:
-            self._failover("failed", "ffmpeg/probe failed")
+            r["retry_at"] = now + 10                         # probe error / not ready yet: keep trying the same source
 
     def caption_tick(self, now, _set=None):
         """Retry every ~25s (max 12x) until our broadcast is active, then set title/description once."""
