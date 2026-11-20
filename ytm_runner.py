@@ -721,6 +721,7 @@ def mark_present(hls):
         return None
 
 
+WORDMARK_ASPECT = 0.5871       # lml_wordmark.png height / width
 LOGO_PROBE_VER = 8          # bump when sizing logic changes: cached per-match specs from older logic are re-probed
 
 
@@ -998,7 +999,7 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False, wm_spec=N
     yt, fb = outputs()
     base = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-stats", "-reconnect", "1", "-reconnect_streamed", "1",
             "-reconnect_delay_max", "5", "-fflags", "+genpts", "-i", hls]
-    logo = os.environ.get("YTM_LOGO", "lml_logo.png")      # round LML logo, navy-filled inside the ring (lml_logo.png). Alternatives: YTM_LOGO=logo.png (transparent wordmark + navy LIVE patch) or lml_circle.png
+    logo = os.environ.get("YTM_LOGO", "lml_wordmark.png")      # round LML logo, navy-filled inside the ring (lml_logo.png). Alternatives: YTM_LOGO=logo.png (transparent wordmark + navy LIVE patch) or lml_circle.png
     if not os.path.isfile(logo):
         if fb and yt:
             return base + ["-map", "0:v?", "-map", "0:a?", "-c", "copy", "-tag:a", "10", "-f", "tee", _tee(rtmp, fb)]
@@ -1116,6 +1117,18 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False, wm_spec=N
                 wm = (lh, gx, wy + 3)
     if logo_spec:                                                 # auto-sized to the detected source logo
         lw, pos = str(int(logo_spec["w"])), "%d:%d" % (int(logo_spec["x"]), int(logo_spec["y"]))
+    # wordmark test (YTM_LOGO=lml_wordmark.png, trimmed LML panther wordmark, 700x~420 transparent): the circle size w from the probe is the
+    # circle's width, a wide wordmark needs more width to cover the same spot -> width = w * YTM_WORDMARK_K (1.5), centred where the circle was.
+    if os.path.basename(logo) == "lml_wordmark.png":
+        try:
+            w0 = int(float(lw))
+            wn = int(w0 * float(os.environ.get("YTM_WORDMARK_K", "1.5")))
+            hn = int(wn * WORDMARK_ASPECT)
+            if logo_spec:
+                pos = "%d:%d" % (int(logo_spec["x"]) + w0 // 2 - wn // 2, int(logo_spec["y"]) + w0 // 2 - hn // 2)
+            lw = str(wn)
+        except ValueError:
+            pass
     # navy patch right under the wordmark logo: fills the strip where a source's sub-badge/"LIVE" text pokes out below our transparent logo.
     # YTM_LOGO_PATCH=off disables; YTM_LOGO_PATCH_COLOR = hex colour (default navy 0x101b38).
     if os.environ.get("YTM_LOGO_PATCH", "on").strip().lower() != "off" and os.path.basename(logo) == "logo.png":
