@@ -721,7 +721,7 @@ def mark_present(hls):
         return None
 
 
-LOGO_PROBE_VER = 9          # bump when sizing logic changes: cached per-match specs from older logic are re-probed
+LOGO_PROBE_VER = 8          # bump when sizing logic changes: cached per-match specs from older logic are re-probed
 
 
 def logo_probe(hls):
@@ -810,7 +810,6 @@ def logo_probe(hls):
         for i in range(n):
             if es[i] >= edge_t and (((i // CW) // CELL) * gw + min((i % CW) // CELL, gw - 1)) in comp:
                 px.append((i % CW, i // CW))
-        strict_px = list(px)                                          # only the strong-edge pixels of the blob (used for the smear boxes below)
         x0p, x1p = min(p_[0] for p_ in px), max(p_[0] for p_ in px)
         y0p, y1p = min(p_[1] for p_ in px), max(p_[1] for p_ in px)
         # refine: weak edges of the same logo (low-contrast side of a ball etc.) were missed by the strict level -> also take every
@@ -821,7 +820,7 @@ def logo_probe(hls):
         y0p, y1p = min(p_[1] for p_ in px), max(p_[1] for p_ in px)
         cx, cy = X0 + (x0p + x1p) / 2.0, Y0 + (y0p + y1p) / 2.0
         dist = sorted(math.hypot(p_[0] - (x0p + x1p) / 2.0, p_[1] - (y0p + y1p) / 2.0) for p_ in px)
-        rad = dist[min(len(dist) - 1, int(len(dist) * float(os.environ.get("YTM_LOGO_PCT", "0.88"))))]     # 88th percentile (YTM_LOGO_PCT): wide-base / stray static pixels can't inflate the circle, whatever pokes out is smeared (patch boxes)
+        rad = dist[min(len(dist) - 1, int(len(dist) * 0.97))]     # 97th percentile: a few stray static pixels can't inflate the circle
         bx, by, bw, bh = X0 + x0p, Y0 + y0p, x1p - x0p + 1, y1p - y0p + 1
         fill = len(comp) / float((max(xs) - min(xs) + 1) * (max(ys) - min(ys) + 1))
         shape = "circle"                                  # always our round logo
@@ -833,23 +832,6 @@ def logo_probe(hls):
         x = int(min(1280 - w + bleed, max(-bleed, cx - w / 2.0)))
         y = int(min(720 - h + bleed, max(-bleed, cy - h / 2.0)))
         spec = {"shape": shape, "w": w, "x": x, "y": y}
-        # static source-logo pixels our circle does NOT cover (wide base / ribbon of a ball logo peeking out at the sides): instead of
-        # growing the circle, smear just those tiny spots (delogo = interpolated from the surroundings). One box per side (left/right).
-        ccx, ccy, crad = x + w / 2.0, y + h / 2.0, w / 2.0 * 0.95        # our PNG ring only fills ~95% of the width
-        outs = [(X0 + p_[0], Y0 + p_[1]) for p_ in strict_px if crad - 1.0 < math.hypot(X0 + p_[0] - ccx, Y0 + p_[1] - ccy) <= crad + 30.0]
-        boxes = []
-        for side in (0, 1):
-            grp = [o for o in outs if (o[0] < ccx) == (side == 0)]
-            if len(grp) < 3:
-                continue
-            gx0, gx1, gy0, gy1 = min(o[0] for o in grp) - 5, max(o[0] for o in grp) + 5, min(o[1] for o in grp) - 5, max(o[1] for o in grp) + 5
-            gx0, gy0 = max(1, gx0), max(1, gy0)
-            gx1, gy1 = min(1278, gx1), min(718, gy1)
-            if gx1 - gx0 >= 3 and gy1 - gy0 >= 3 and (gx1 - gx0) * (gy1 - gy0) <= 3600:
-                boxes.append("%d:%d:%d:%d" % (gx0, gy0, gx1 - gx0, gy1 - gy0))
-        if boxes:
-            spec["patch"] = ";".join(boxes)
-            log("logo probe: source logo pokes out of our circle -> smear boxes %s" % spec["patch"])
         log("logo probe: source logo %dx%d @%d,%d fill=%.2f -> our %s logo %dpx @%d,%d" % (bw, bh, bx, by, fill, shape, w, x, y))
         return spec
     except Exception as e:
@@ -1134,10 +1116,6 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False, wm_spec=N
                 wm = (lh, gx, wy + 3)
     if logo_spec:                                                 # auto-sized to the detected source logo
         lw, pos = str(int(logo_spec["w"])), "%d:%d" % (int(logo_spec["x"]), int(logo_spec["y"]))
-    if logo_spec and logo_spec.get("patch"):                      # tiny spots of the source logo outside our circle (see logo_probe)
-        for bx in str(logo_spec["patch"]).split(";"):
-            if re.fullmatch(r"\d{1,4}:\d{1,4}:\d{1,4}:\d{1,4}", bx.strip()):
-                chain += ",delogo=x=%s:y=%s:w=%s:h=%s" % tuple(bx.strip().split(":"))
     # navy patch right under the wordmark logo: fills the strip where a source's sub-badge/"LIVE" text pokes out below our transparent logo.
     # YTM_LOGO_PATCH=off disables; YTM_LOGO_PATCH_COLOR = hex colour (default navy 0x101b38).
     if os.environ.get("YTM_LOGO_PATCH", "on").strip().lower() != "off" and os.path.basename(logo) == "logo.png":
