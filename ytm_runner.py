@@ -721,7 +721,7 @@ def mark_present(hls):
         return None
 
 
-LOGO_PROBE_VER = 7          # bump when sizing logic changes: cached per-match specs from older logic are re-probed
+LOGO_PROBE_VER = 8          # bump when sizing logic changes: cached per-match specs from older logic are re-probed
 
 
 def logo_probe(hls):
@@ -795,22 +795,38 @@ def logo_probe(hls):
                 continue                                 # touches the region border / absurd size = background, try next level
             if X0 + (min(xs) + max(xs) + 1) * CELL / 2.0 < float(os.environ.get("YTM_LOGO_MINX", "1010")):
                 continue                                 # blob centre too far left of the corner = static background (stands/banner), not a corner logo
-            pick = (best, xs, ys, bw, bh)
+            pick = (best, xs, ys, bw, bh, edge_t)
             break
         if not pick:
             log("logo probe: no reliable static logo -> default logo")
             return None
-        best, xs, ys, bw, bh = pick
-        bx, by = X0 + min(xs) * CELL, Y0 + min(ys) * CELL
-        fill = len(best[1]) / float((max(xs) - min(xs) + 1) * (max(ys) - min(ys) + 1))
-        bx, by, bw, bh = bx - CELL, max(0, by - CELL), bw + 2 * CELL, bh + 2 * CELL     # +1 cell margin: glyph-style logos are only partly caught
-        cx, cy = bx + bw / 2.0, by + bh / 2.0
-        shape = "circle"                                  # always our round logo, sized so the circle covers the source box
-        if bw / float(bh) >= 1.25 or fill >= 0.92:
-            d = math.hypot(bw, bh)                        # wide / square source: circle through the box corners covers it all
-        else:
-            d = max(bw, bh) * 1.08 + 4                    # round-ish source: small safety margin (no tiny edge peeking)
-        w = int(min(float(os.environ.get("YTM_LOGO_MAX", "260")), max(float(os.environ.get("YTM_LOGO_MIN", "140")), d * float(os.environ.get("YTM_LOGO_SCALE", "1.3")))))   # a bit bigger than the bare cover size (YTM_LOGO_SCALE) and never below YTM_LOGO_MIN
+        best, xs, ys, bw, bh, edge_t = pick
+        # TIGHT cover: use the real static edge pixels of the blob (not the 8px cell box) -> centre of their bbox, radius = farthest
+        # pixel from that centre. Circle diameter = 2*radius + small pad, so a small source logo (e.g. a tennis ball) is covered
+        # by a circle of about the same size, not 1.3x-2x bigger. YTM_LOGO_PAD (px each side, 4), YTM_LOGO_SCALE (1.04: our
+        # PNG ring has ~4% transparent margin), YTM_LOGO_MIN (40), YTM_LOGO_MAX (260).
+        comp = set(best[1])
+        px = []
+        for i in range(n):
+            if es[i] >= edge_t and (((i // CW) // CELL) * gw + min((i % CW) // CELL, gw - 1)) in comp:
+                px.append((i % CW, i // CW))
+        x0p, x1p = min(p_[0] for p_ in px), max(p_[0] for p_ in px)
+        y0p, y1p = min(p_[1] for p_ in px), max(p_[1] for p_ in px)
+        # refine: weak edges of the same logo (low-contrast side of a ball etc.) were missed by the strict level -> also take every
+        # static edge pixel (>=24) within 10 px of the box found so far; bounded growth, so far-away background can't pull it out.
+        gx0, gx1, gy0, gy1 = max(0, x0p - 10), min(CW - 1, x1p + 10), max(0, y0p - 10), min(CH - 1, y1p + 10)
+        px = [(xx, yy) for yy in range(gy0, gy1 + 1) for xx in range(gx0, gx1 + 1) if es[yy * CW + xx] > 0] or px
+        x0p, x1p = min(p_[0] for p_ in px), max(p_[0] for p_ in px)
+        y0p, y1p = min(p_[1] for p_ in px), max(p_[1] for p_ in px)
+        cx, cy = X0 + (x0p + x1p) / 2.0, Y0 + (y0p + y1p) / 2.0
+        dist = sorted(math.hypot(p_[0] - (x0p + x1p) / 2.0, p_[1] - (y0p + y1p) / 2.0) for p_ in px)
+        rad = dist[min(len(dist) - 1, int(len(dist) * 0.97))]     # 97th percentile: a few stray static pixels can't inflate the circle
+        bx, by, bw, bh = X0 + x0p, Y0 + y0p, x1p - x0p + 1, y1p - y0p + 1
+        fill = len(comp) / float((max(xs) - min(xs) + 1) * (max(ys) - min(ys) + 1))
+        shape = "circle"                                  # always our round logo
+        pad = float(os.environ.get("YTM_LOGO_PAD", "4"))
+        d = 2.0 * rad + 2.0 * pad
+        w = int(min(float(os.environ.get("YTM_LOGO_MAX", "260")), max(float(os.environ.get("YTM_LOGO_MIN", "40")), d * float(os.environ.get("YTM_LOGO_SCALE", "1.04")))))
         h = w
         bleed = int(w * 0.12)                             # a circle fully inside the frame can't cover a badge hugging the corner -> allow a small bleed past the edge
         x = int(min(1280 - w + bleed, max(-bleed, cx - w / 2.0)))
