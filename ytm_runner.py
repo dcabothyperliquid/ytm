@@ -999,7 +999,7 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False, wm_spec=N
     yt, fb = outputs()
     base = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-stats", "-reconnect", "1", "-reconnect_streamed", "1",
             "-reconnect_delay_max", "5", "-fflags", "+genpts", "-i", hls]
-    logo = os.environ.get("YTM_LOGO", "lml_wordmark.png")      # round LML logo, navy-filled inside the ring (lml_logo.png). Alternatives: YTM_LOGO=logo.png (transparent wordmark + navy LIVE patch) or lml_circle.png
+    logo = os.environ.get("YTM_LOGO", "lml_logo.png")      # round LML logo, navy-filled inside the ring (lml_logo.png). Alternatives: YTM_LOGO=logo.png (transparent wordmark + navy LIVE patch) or lml_circle.png
     if not os.path.isfile(logo):
         if fb and yt:
             return base + ["-map", "0:v?", "-map", "0:a?", "-c", "copy", "-tag:a", "10", "-f", "tee", _tee(rtmp, fb)]
@@ -1090,7 +1090,7 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False, wm_spec=N
         wm_alpha = "%.2f" % max(0.0, min(1.0, float(os.environ.get("YTM_WM_ALPHA", "1.0"))))
     except ValueError:
         wm_alpha = "1.00"
-    if strip and os.environ.get("YTM_WM", "on").strip().lower() != "off":
+    if strip and os.environ.get("YTM_WM", "off").strip().lower() != "off":
         # OUR LML SPORTS badge, centre-bottom, on every relay (own branding; no source mark is removed, only covered by the pill).
         # centre-bottom spot (x471-801,y577-615) carries OUR logo + text. YTM_WM=off hides it.
         # YTM_WM_BOX="x:y:w:h" (1280x720 frame), YTM_WM_TEXT, YTM_WM=off disables.
@@ -1190,7 +1190,7 @@ class Relay:
                 spec = logo_probe(hls)
                 self.st["logo_probe"] = {"video_id": vid, "spec": spec, "ver": LOGO_PROBE_VER, "at": int(time.time())}
         wm_spec = None
-        if os.environ.get("YTM_WM_AUTO", "on").lower() != "off" and os.environ.get("YTM_WM", "on").strip().lower() != "off":
+        if os.environ.get("YTM_WM_AUTO", "on").lower() != "off" and os.environ.get("YTM_WM", "off").strip().lower() != "off":
             vid = (self.st.get("relay") or {}).get("video_id") or getattr(self, "_cur_vid", None)
             wp = self.st.get("wm_probe") or {}
             if vid and wp.get("video_id") == vid and wp.get("ver") == WM_PROBE_VER and "spec" in wp \
