@@ -1125,7 +1125,9 @@ def ffmpeg_cmd(hls, rtmp, strip=True, logo_spec=None, permitted=False, wm_spec=N
             wn = int(w0 * float(os.environ.get("YTM_WORDMARK_K", "1.5")))
             hn = int(wn * WORDMARK_ASPECT)
             if logo_spec:
-                pos = "%d:%d" % (int(logo_spec["x"]) + w0 // 2 - wn // 2, int(logo_spec["y"]) + w0 // 2 - hn // 2)
+                dy = int(float(os.environ.get("YTM_WORDMARK_DY", "-22")))      # px, negative = up (LML letters over the source ball, SPORTS over its caption)
+                dx = int(float(os.environ.get("YTM_WORDMARK_DX", "0")))
+                pos = "%d:%d" % (int(logo_spec["x"]) + w0 // 2 - wn // 2 + dx, max(0, int(logo_spec["y"]) + w0 // 2 - hn // 2 + dy))
             lw = str(wn)
         except ValueError:
             pass
