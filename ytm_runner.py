@@ -721,7 +721,7 @@ def mark_present(hls):
         return None
 
 
-WORDMARK_ASPECT = 0.5871       # lml_wordmark.png height / width
+WORDMARK_ASPECT = 0.5414       # lml_wordmark.png height / width
 LOGO_PROBE_VER = 8          # bump when sizing logic changes: cached per-match specs from older logic are re-probed
 
 
