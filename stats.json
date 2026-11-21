@@ -1,0 +1,93 @@
+{
+ "generated": 1795288213,
+ "generated_utc": "2026-11-21 19:10",
+ "oauth": true,
+ "channel": {
+  "id": "UCvHaGlkg3HEXaIRMack-fbQ",
+  "title": "Local Match Live",
+  "subscribers": 42,
+  "views": 12917,
+  "videos": 52
+ },
+ "last_28d": {
+  "error": 403,
+  "note": "{\n  \"error\": {\n    \"code\": 403,\n    \"message\": \"YouTube Analytics API has not been used in project 366084356704 before or it is disabled. Enable it by visiting https://console.developers.google.com/ap"
+ },
+ "last_365d": {
+  "error": 403,
+  "note": "{\n  \"error\": {\n    \"code\": 403,\n    \"message\": \"YouTube Analytics API has not been used in project 366084356704 before or it is disabled. Enable it by visiting https://console.developers.google.com/ap"
+ },
+ "bot": {
+  "status": "watching",
+  "units_today": 3283,
+  "relay": null,
+  "outcomes_last30": {
+   "ended": 4,
+   "interrupted": 13,
+   "stopped": 3,
+   "failed": 10
+  },
+  "recent": [
+   {
+    "title": "FINAL=DAY || BROOKFIELD CRICKET PREMIER LEAGUE-2026-SEASON 6",
+    "outcome": "ended",
+    "note": "source ended",
+    "min": 48
+   },
+   {
+    "title": "FINAL=DAY || BROOKFIELD CRICKET PREMIER LEAGUE-2026-SEASON 6",
+    "outcome": "interrupted",
+    "note": "job ended, next run resumes",
+    "min": 350
+   },
+   {
+    "title": "DAY-5 | DHAMAKA CUP 2026",
+    "outcome": "interrupted",
+    "note": "job ended, next run resumes",
+    "min": 243
+   },
+   {
+    "title": "DAY=5 || BROOKFIELD CRICKET PREMIER LEAGUE-2026-SEASON 6",
+    "outcome": "ended",
+    "note": "source ended",
+    "min": 104
+   },
+   {
+    "title": "URAN PREMIER LEAGUE 2026 || SEASON 6 || DAY 6",
+    "outcome": "stopped",
+    "note": "manual stop",
+    "min": 2
+   },
+   {
+    "title": "DAY-4 | DHAMAKA CUP 2026",
+    "outcome": "ended",
+    "note": "source ended",
+    "min": 1
+   },
+   {
+    "title": "DAY=5 || BROOKFIELD CRICKET PREMIER LEAGUE-2026-SEASON 6",
+    "outcome": "failed",
+    "note": "probe: ERROR: [youtube] BziBRrbTRX0: Video unavailable. This content isn’t available.",
+    "min": 0
+   },
+   {
+    "title": "DAY=5 || BROOKFIELD CRICKET PREMIER LEAGUE-2026-SEASON 6",
+    "outcome": "failed",
+    "note": "probe: ERROR: [youtube] BziBRrbTRX0: Video unavailable. This content isn’t available.",
+    "min": 0
+   },
+   {
+    "title": "फाइनल डे 🏏रुद्रपुर खेल महोत्सव 2026",
+    "outcome": "failed",
+    "note": "probe: ERROR: [youtube] V1WW9-oQouU: Video unavailable. This content isn’t available.",
+    "min": 0
+   },
+   {
+    "title": "DAY-4 | DHAMAKA CUP 2026",
+    "outcome": "failed",
+    "note": "probe: ERROR: [youtube] 71PmU0roP2U: Video unavailable. This content isn’t available.",
+    "min": 0
+   }
+  ]
+ }
+}
