@@ -1,0 +1,9 @@
+::warning title=hl scout::scoreboard scout failed: could not convert string to float: 'N/A'
+[hl +3710s] scout: loading whisper base
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[hl +3711s] scout audio 635.2 min
+[0;93m2026-11-21 15:37:44.661079898 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+[hl-review] live write retry: gh failed (1): gh: is at 0223fe79caf987642803b8be1f00b44dd806317d but expected 3cab63e066be9da185baac06605757c542073fd5 (HTTP 409)
+
+::notice title=hl::scout oYhMVoz3LJk: incomplete | start None end 36644.0 | Match ka start/finish detect nahi hua — time khud daalo ya skip karo
+[hl +6163s] disk released (0 items), free 91.5 GB
