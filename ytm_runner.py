@@ -1723,6 +1723,10 @@ def run(_sleep=time.sleep, _read=None, _write=None, _relay_factory=None, _detect
                 relay.step([x for x in live if x["video_id"] not in taken] if taken else live, cfg, now)
                 if _relay_factory is None:
                     try:
+                        auto_relay2(cfg, live, st, now, relay)
+                    except Exception as e:
+                        log("auto_relay2: %s" % str(e)[:100])
+                    try:
                         auto_relay3(cfg, live, st, now, relay)
                     except Exception as e:
                         log("auto_relay3: %s" % str(e)[:100])
@@ -1976,6 +1980,44 @@ def skip_hit(c, skip):
     return any(w in text for w in words)
 
 
+def auto_relay2(cfg, live, st, now, relay=None):
+    """Relay 2 auto (same rules as Relay 1 auto): while Relay mode is Auto and cfg.r2_auto is on (default), hand relay 2 the next live
+    match that matches auto_skip (cricket words; with an empty auto_skip any match qualifies), is not carried by relay 1/3 and was not
+    tried in the last 30 min. Relay 1 always picks first (channel priority), so relay 2 gets the NEXT cricket match. Writes cfg.relay2
+    (same request relay 2's dashboard button writes) and dispatches yt-mirror2.yml. Relay 3 auto takes the non-cricket ones."""
+    if cfg.get("mode") == "manual" or not cfg.get("r2_auto", True):
+        return
+    if (cfg.get("relay2") or {}).get("video_id"):
+        return
+    skip = [k.strip().lower() for k in (cfg.get("auto_skip") or "").split(",") if k.strip()]
+    taken = {(st.get("relay") or {}).get("video_id"), (cfg.get("relay3") or {}).get("video_id")} - {None}
+    tried = st.setdefault("r2_tried", {})
+    for v in [v for v, t in tried.items() if now - t > 1800]:
+        tried.pop(v, None)
+    for c in live:
+        v = c["video_id"]
+        if v in taken or v in tried or (skip and not skip_hit(c, skip)):
+            continue
+        if relay is not None and relay._blocked(v, now):
+            continue
+        tried[v] = now
+        fresh, sha = read_json(CFG_PATH)
+        if not fresh or (fresh.get("relay2") or {}).get("video_id"):
+            return
+        if v in {(fresh.get("relay3") or {}).get("video_id")}:      # relay 3 grabbed it between our read and now
+            continue
+        fresh["relay2"] = {"video_id": v, "title": c.get("title", ""), "channel": c.get("channel", ""), "handle": c.get("handle", ""),
+                           "channel_id": c.get("channel_id", ""), "url": c.get("url", ""), "seq": int(now * 1000), "auto": True}
+        write_json(CFG_PATH, fresh, sha, "ytm relay2 auto")
+        log("relay2 auto: %s" % c.get("title", v)[:80])
+        if os.environ.get("GITHUB_ACTIONS"):
+            try:
+                gh("POST", "actions/workflows/%s/dispatches" % _wf_file("2"), {"ref": "main"})
+            except Exception as e:
+                log("relay2 dispatch failed: %s" % str(e)[:100])
+        return
+
+
 def auto_relay3(cfg, live, st, now, relay=None):
     """Relay 3 auto: while Relay mode is Auto and cfg.r3_auto is on (default), hand relay 3 the next live match that is NOT in
     auto_skip (cricket), not carried by relay 1/2 and not tried in the last 30 min. Relay 1 always picks first (channel priority);
@@ -1999,6 +2041,8 @@ def auto_relay3(cfg, live, st, now, relay=None):
         fresh, sha = read_json(CFG_PATH)
         if not fresh or (fresh.get("relay3") or {}).get("video_id"):
             return
+        if v in {(fresh.get("relay2") or {}).get("video_id")}:      # relay 2 auto grabbed it between our read and now
+            continue
         fresh["relay3"] = {"video_id": v, "title": c.get("title", ""), "channel": c.get("channel", ""), "handle": c.get("handle", ""),
                            "channel_id": c.get("channel_id", ""), "url": c.get("url", ""), "seq": int(now * 1000), "auto": True}
         write_json(CFG_PATH, fresh, sha, "ytm relay3 auto")
