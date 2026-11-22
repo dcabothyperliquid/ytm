@@ -76,6 +76,12 @@ class Flagged(unittest.TestCase):
         self.assertFalse(R.runner_flagged({"history": self.fails(["A", "A", "B", "B"]), "run_started": now - 60}, now))
         self.assertFalse(R.runner_flagged({"history": self.fails(["A", "A", "B", "B"]), "run_started": now - 900, "selfheal_at": now - 100}, now))
 
+    def test_regex_only_runner_errors(self):
+        self.assertTrue(R.FLAG_RE.search("probe: ERROR: Video unavailable. This content isn't available."))
+        self.assertTrue(R.FLAG_RE.search("Sign in to confirm you're not a bot"))
+        self.assertFalse(R.FLAG_RE.search("source not back in 900s"))
+        self.assertFalse(R.FLAG_RE.search("both streams ok"))
+
 
 if __name__ == "__main__":
     unittest.main()

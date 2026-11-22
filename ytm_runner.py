@@ -1592,6 +1592,7 @@ class Relay:
                     return
 
 
+FLAG_RE = re.compile(r"unavailable|sign in|not a bot", re.I)   # probe errors that point at the runner/IP, not at the video
 CMD_WAIT = 180            # s: a start command waits this long for its match to show up in the live list (fresh run starts with an empty list)
 
 
@@ -1620,7 +1621,7 @@ def runner_flagged(st, now):
     if st.get("relay") or now - st.get("selfheal_at", 0) < 1800 or now - st.get("run_started", now) < 300:
         return False
     f = [x for x in st.get("history", []) if x.get("outcome") == "failed" and now - (x.get("ended") or 0) < 1800
-         and re.search(r"unavailable|sign in|bot", x.get("note") or "", re.I)]
+         and FLAG_RE.search(x.get("note") or "")]
     return len(f) >= 4 and len({x.get("video_id") for x in f}) >= 2
 
 
@@ -1756,6 +1757,8 @@ def run(_sleep=time.sleep, _read=None, _write=None, _relay_factory=None, _detect
                 break
             if _chain and runner_flagged(st, now):
                 st["selfheal_at"] = int(now)
+                st["history"] = [x for x in st.get("history", []) if not (x.get("outcome") == "failed" and now - (x.get("ended") or 0) < 1800
+                                                                       and FLAG_RE.search(x.get("note") or ""))]   # runner's fault, not the videos': fresh runner retries them
                 log("probe keeps failing on several videos -> runner looks flagged, ending job so a fresh runner takes over")
                 ensure_next_queued()
                 break
