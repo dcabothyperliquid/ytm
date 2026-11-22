@@ -1,0 +1,55 @@
+name: YT Diag Probe (manual)
+on:
+  workflow_dispatch:
+    inputs:
+      videos:
+        description: "video ids (space/comma separated)"
+        required: true
+permissions:
+  contents: write
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install yt-dlp
+        run: |
+          for i in 1 2 3; do timeout 180 pip install -U "yt-dlp[default]" && break; sleep 5; done
+          node --version
+      - name: Cookies (optional)
+        env:
+          YT_COOKIES: ${{ secrets.YT_COOKIES }}
+        run: |
+          if [ -n "$YT_COOKIES" ]; then
+            printf '%s\n' "$YT_COOKIES" > cookies_raw
+            python - <<'PY'
+          import json
+          raw = open("cookies_raw").read().strip()
+          if raw[:1] in "[{":
+              d = json.loads(raw)
+              d = d.get("cookies", d) if isinstance(d, dict) else d
+              out = ["# Netscape HTTP Cookie File"]
+              for c in d:
+                  dom = c.get("domain", "")
+                  exp = int(c.get("expirationDate") or c.get("expires") or 0)
+                  out.append("\t".join([dom, "TRUE" if dom.startswith(".") else "FALSE", c.get("path", "/"),
+                                        "TRUE" if c.get("secure") else "FALSE", str(max(exp, 0)), c["name"], c["value"]]))
+              raw = "\n".join(out)
+          open("cookies.txt", "w").write(raw + "\n")
+          PY
+            rm -f cookies_raw
+          fi
+      - name: Run probe diag
+        run: python diag_probe.py "${{ github.event.inputs.videos }}"
+      - name: Publish result to ytm-diag-probe branch
+        if: always()
+        run: |
+          git config user.name "ytm-diag"; git config user.email "diag@users.noreply.github.com"
+          mkdir -p /tmp/o && cp diag_out.json /tmp/o/
+          rm -f cookies.txt
+          git checkout --orphan ytm-diag-probe && git rm -rf . -q && cp /tmp/o/diag_out.json . && git add diag_out.json
+          git commit -qm "diag probe result" && git push -f origin ytm-diag-probe
