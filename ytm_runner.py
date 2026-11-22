@@ -1592,18 +1592,36 @@ class Relay:
                     return
 
 
+CMD_WAIT = 180            # s: a start command waits this long for its match to show up in the live list (fresh run starts with an empty list)
+
+
 def apply_commands(cfg, st, relay, live, now):
     acked = st.get("acked", 0)
-    for cmd in sorted(cfg.get("commands", []), key=lambda c: c["id"]):
+    cmds = sorted(cfg.get("commands", []), key=lambda c: c["id"])
+    for i, cmd in enumerate(cmds):
         if cmd["id"] <= acked:
             continue
+        if cmd["type"] == "start" and not st.get("relay"):
+            c = next((x for x in live if x["video_id"] == cmd.get("video_id")), None)
+            if c is None:
+                # live list not filled yet (new run) -> keep the command pending instead of acking it and losing it silently
+                if i == len(cmds) - 1 and now - cmd["id"] / 1000.0 < CMD_WAIT:
+                    break
+            else:
+                relay.start(c)
         st["acked"] = cmd["id"]
         if cmd["type"] == "stop":
             relay.stop("stopped", "manual stop")
-        elif cmd["type"] == "start" and not st.get("relay"):
-            c = next((x for x in live if x["video_id"] == cmd.get("video_id")), None)
-            if c:
-                relay.start(c)
+
+
+def runner_flagged(st, now):
+    """Probes keep failing with 'unavailable / sign in / bot' on >=2 different videos (>=4 fails in 30 min), nothing is relaying and no
+    self-heal ran in the last 30 min -> this runner/IP is probably flagged by YouTube. The run ends so the queued successor starts on a fresh runner."""
+    if st.get("relay") or now - st.get("selfheal_at", 0) < 1800 or now - st.get("run_started", now) < 300:
+        return False
+    f = [x for x in st.get("history", []) if x.get("outcome") == "failed" and now - (x.get("ended") or 0) < 1800
+         and re.search(r"unavailable|sign in|bot", x.get("note") or "", re.I)]
+    return len(f) >= 4 and len({x.get("video_id") for x in f}) >= 2
 
 
 # ── entry points ─────────────────────────────────────────────────────────
@@ -1736,7 +1754,15 @@ def run(_sleep=time.sleep, _read=None, _write=None, _relay_factory=None, _detect
             if minutes_today(st, now) >= int(cfg.get("daily_cap_h", 20)) * 60 and not st.get("relay"):
                 log("daily cap reached -> stop")
                 break
+            if _chain and runner_flagged(st, now):
+                st["selfheal_at"] = int(now)
+                log("probe keeps failing on several videos -> runner looks flagged, ending job so a fresh runner takes over")
+                ensure_next_queued()
+                break
         shown = list(errors)
+        h0 = (st.get("history") or [None])[0]
+        if h0 and h0.get("outcome") == "failed" and not st.get("relay") and now - (h0.get("ended") or 0) < 300:
+            shown.append("Relay start fail: %s - %s" % ((h0.get("title") or "")[:40], (h0.get("note") or "")[:90]))
         if st.get("pending_end") and not st.get("relay"):
             shown.insert(0, "Purana YouTube broadcast end nahi ho paya - naya match tab tak hold par hai (purane video me mix na ho).")
         if AUTH["dead"]:
