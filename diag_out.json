@@ -1,0 +1,156 @@
+{
+ "ts": 1795347594,
+ "vids": [
+  "oq9XhP6bvx4",
+  "1X5uFy_HDWQ",
+  "6_OWnm5c0Ok"
+ ],
+ "yt_dlp": "2026.10.26",
+ "node": "v24.22.3",
+ "cookies_file": true,
+ "cookie_names": [
+  "APISID",
+  "GPS",
+  "HSID",
+  "LOGIN_INFO",
+  "PREF",
+  "SAPISID",
+  "SID",
+  "SIDCC",
+  "SSID",
+  "VISITOR_INFO1_LIVE",
+  "VISITOR_PRIVACY_METADATA",
+  "YSC",
+  "__Secure-1PAPISID",
+  "__Secure-1PSID",
+  "__Secure-1PSIDCC",
+  "__Secure-1PSIDTS",
+  "__Secure-3PAPISID",
+  "__Secure-3PSID",
+  "__Secure-3PSIDCC",
+  "__Secure-3PSIDTS",
+  "__Secure-YNID"
+ ],
+ "cookie_count": 21,
+ "probe": {
+  "oq9XhP6bvx4": {
+   "runner_exact": {
+    "rc": 0,
+    "err": "",
+    "is_live": true,
+    "live_status": "is_live",
+    "has_url": true,
+    "m3u8_formats": 6
+   },
+   "no_cookies": {
+    "rc": 1,
+    "err": "-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies. Also see  https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies  for tips on effectively exporting YouTube cookies"
+   },
+   "no_ejs_with_cookies": {
+    "rc": 1,
+    "err": "ERROR: [youtube] oq9XhP6bvx4: No video formats found!; please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U"
+   },
+   "client_tv": {
+    "rc": 1,
+    "err": "ERROR: [youtube] oq9XhP6bvx4: The page needs to be reloaded."
+   },
+   "client_mweb": {
+    "rc": 0,
+    "err": "",
+    "is_live": true,
+    "live_status": "is_live",
+    "has_url": true,
+    "m3u8_formats": 6
+   },
+   "client_android": {
+    "rc": 1,
+    "err": "-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies. Also see  https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies  for tips on effectively exporting YouTube cookies"
+   },
+   "watch_page": {
+    "len": 1335113,
+    "playability": "LOGIN_REQUIRED",
+    "reason": "Sign in to confirm you’re not a bot",
+    "isLiveNow": false,
+    "consent": false
+   }
+  },
+  "1X5uFy_HDWQ": {
+   "runner_exact": {
+    "rc": 0,
+    "err": "",
+    "is_live": true,
+    "live_status": "is_live",
+    "has_url": true,
+    "m3u8_formats": 6
+   },
+   "no_cookies": {
+    "rc": 1,
+    "err": "-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies. Also see  https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies  for tips on effectively exporting YouTube cookies"
+   },
+   "no_ejs_with_cookies": {
+    "rc": 1,
+    "err": "ERROR: [youtube] 1X5uFy_HDWQ: No video formats found!; please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U"
+   },
+   "client_tv": {
+    "rc": 1,
+    "err": "ERROR: [youtube] 1X5uFy_HDWQ: The page needs to be reloaded."
+   },
+   "client_mweb": {
+    "rc": 0,
+    "err": "",
+    "is_live": true,
+    "live_status": "is_live",
+    "has_url": true,
+    "m3u8_formats": 6
+   },
+   "client_android": {
+    "rc": 1,
+    "err": "-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies. Also see  https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies  for tips on effectively exporting YouTube cookies"
+   },
+   "watch_page": {
+    "len": 1312291,
+    "playability": "LOGIN_REQUIRED",
+    "reason": "Sign in to confirm you’re not a bot",
+    "isLiveNow": false,
+    "consent": false
+   }
+  },
+  "6_OWnm5c0Ok": {
+   "runner_exact": {
+    "rc": 0,
+    "err": "",
+    "is_live": false,
+    "live_status": "post_live",
+    "has_url": false,
+    "m3u8_formats": 0
+   },
+   "no_cookies": {
+    "rc": 1,
+    "err": "-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies. Also see  https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies  for tips on effectively exporting YouTube cookies"
+   },
+   "no_ejs_with_cookies": {
+    "rc": 1,
+    "err": "ERROR: [youtube] 6_OWnm5c0Ok: This live event has ended."
+   },
+   "client_tv": {
+    "rc": 1,
+    "err": "ERROR: [youtube] 6_OWnm5c0Ok: This live event has ended."
+   },
+   "client_mweb": {
+    "rc": 1,
+    "err": "ERROR: [youtube] 6_OWnm5c0Ok: This live event has ended."
+   },
+   "client_android": {
+    "rc": 1,
+    "err": "-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies. Also see  https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies  for tips on effectively exporting YouTube cookies"
+   },
+   "watch_page": {
+    "len": 1320718,
+    "playability": "LOGIN_REQUIRED",
+    "reason": "Sign in to confirm you’re not a bot",
+    "isLiveNow": false,
+    "consent": false
+   }
+  }
+ }
+}
