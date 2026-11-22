@@ -50,6 +50,7 @@ MAX_RUN_MIN = int(os.environ.get("MAX_RUN_MIN", "350"))
 ENDED_GRACE = 90          # s the source may be missing from the live list before we stop
 RETRY_COOLDOWN = 120
 MAX_ATTEMPTS = 3
+FAIL_WINDOW = 1800         # s: only failures this recent count toward MAX_ATTEMPTS (old ones used to block a video forever)
 MAX_RESTARTS = 8
 RETRY_WINDOW = int(os.environ.get("YTM_RETRY_WINDOW", "900"))   # s a dropped source is retried before we give up and take another match
 RUN_OK_SECS = 120         # ffmpeg that ran this long counts as healthy (drop timer resets)
@@ -1544,7 +1545,7 @@ class Relay:
     # -- decisions on each detection
     def _blocked(self, vid, now):
         h = self.st.get("history", [])
-        fails = [x for x in h if x["video_id"] == vid and x["outcome"] == "failed"]
+        fails = [x for x in h if x["video_id"] == vid and x["outcome"] == "failed" and now - (x.get("ended") or 0) < FAIL_WINDOW]
         if len(fails) >= MAX_ATTEMPTS or (fails and now - fails[0]["ended"] < RETRY_COOLDOWN):
             return True
         for x in h[:10]:                                  # newest entry for this video decides:
