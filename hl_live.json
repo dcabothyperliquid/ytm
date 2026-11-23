@@ -1,1 +1,1 @@
-{"phase":"download","detail":"Scout: sirf audio download (match ka time dhoondhne ke liye)","vid":"WfrAmQI4OOI","title":"","cur":null,"total":null,"run_id":"45201440228","started":1795446996,"at":1795447012}
+{"phase":"error","detail":"yt-dlp failed (1): ERROR: [youtube] WfrAmQI4OOI: Video unavailable. This content isn’t available.\n","vid":"WfrAmQI4OOI","title":"","cur":null,"total":null,"run_id":"45201440228","started":1795446996,"at":1795447028}
