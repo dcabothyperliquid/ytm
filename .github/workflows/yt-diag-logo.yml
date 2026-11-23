@@ -1,0 +1,57 @@
+name: YT Diag Logo Probe (manual)
+
+# Grabs the SAME 5 frames (1.5 s apart, 1280x720) that logo_probe() sees on a live source, runs the real logo_probe on the live
+# HLS and publishes the frames + result. Branch ytm-logo-diag (png + result.json only, never cookies).
+on:
+  workflow_dispatch:
+    inputs:
+      video:
+        description: "Live video ID"
+        required: true
+        default: "8jZTl3oFUGM"
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          pip install -q -U "yt-dlp[default]"
+          for i in 1 2 3; do timeout 240 sudo apt-get update -qq && timeout 300 sudo apt-get install -y -qq ffmpeg && break; sleep 5; done
+      - name: Probe
+        env:
+          YT_COOKIES: ${{ secrets.YT_COOKIES }}
+          VID: ${{ github.event.inputs.video }}
+        run: |
+          mkdir -p out
+          python hl_runner.py cookies || true
+          python - <<'PY'
+          import os, json, subprocess, sys
+          sys.argv = ["x"]
+          import ytm_runner as R
+          live, hls = R.probe("https://www.youtube.com/watch?v=" + os.environ["VID"])
+          print("live", live)
+          vf = "fps=0.67,scale=1280:720:flags=bilinear:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2"
+          subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", hls, "-an", "-vf", vf, "-frames:v", "5", "out/p_%02d.png"], timeout=60)
+          spec = R.logo_probe(hls)
+          json.dump({"live": live, "spec": spec, "ver": R.LOGO_PROBE_VER}, open("out/result.json", "w"))
+          print("SPEC", spec)
+          PY
+          ls -la out
+      - name: Publish (ONLY png + json, never cookies)
+        run: |
+          rm -f cookies.txt
+          mkdir -p /tmp/o && cp out/*.png out/result.json /tmp/o/ 2>/dev/null || true
+          git config user.name ytm-logo-diag; git config user.email diag@users.noreply.github.com
+          git checkout --orphan ytm-logo-diag && git rm -rf . -q
+          git clean -fdxq
+          cp /tmp/o/* . && git add -A
+          git commit -qm "logo probe frames" && git push -f origin ytm-logo-diag
