@@ -723,7 +723,7 @@ def mark_present(hls):
 
 
 WORDMARK_ASPECT = 0.5414       # lml_wordmark.png height / width
-LOGO_PROBE_VER = 8          # bump when sizing logic changes: cached per-match specs from older logic are re-probed
+LOGO_PROBE_VER = 9          # bump when sizing logic changes: cached per-match specs from older logic are re-probed
 
 
 def logo_probe(hls):
@@ -739,25 +739,50 @@ def logo_probe(hls):
     gw, gh = CW // CELL, CH // CELL
     try:
         vf = ("fps=0.67,scale=1280:720:flags=bilinear:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,"
-              "crop=%d:%d:%d:%d,format=gray" % (CW, CH, X0, Y0))
+              "crop=%d:%d:%d:%d,format=rgb24" % (CW, CH, X0, Y0))
         p = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", hls, "-an", "-vf", vf,
                             "-frames:v", "5", "-f", "rawvideo", "-"], capture_output=True, timeout=45)
         n = CW * CH
-        fr = [p.stdout[i * n:(i + 1) * n] for i in range(len(p.stdout) // n)]
+        n3 = n * 3
+        fr = [p.stdout[i * n3:(i + 1) * n3] for i in range(len(p.stdout) // n3)]
         if len(fr) < 4:
             log("logo probe: only %d frame(s) -> default logo" % len(fr))
             return None
         k = len(fr)
-        mean = [sum(f[i] for f in fr) / k for i in range(n)]
+        # COLOUR-aware (v9): a pink/red/yellow logo on a bright sky has almost no LUMA edge (the old gray probe missed the pink
+        # ovals of the Dilshan logo and only found the dark part under it -> source logo peeked out above our circle).
+        # Edge = max over R,G,B of the neighbour step, static = max over R,G,B of the change between frames.
+        mean = [sum(f[i] for f in fr) / k for i in range(n3)]
         stat_t = float(os.environ.get("YTM_LOGO_STATIC", "12"))
-        es = [0.0] * n                                   # edge strength, only where the pixel is static
+        stat2 = float(os.environ.get("YTM_LOGO_STATIC2", "40"))
+        grow_e = float(os.environ.get("YTM_LOGO_GROW_E", "60"))      # growth only through STRONG edges: busy static background (patterned banner, grass line) has weak ones
+        es = [0.0] * n                                   # edge strength, only where the pixel is static (strict)
+        es2 = [0.0] * n                                  # same with a relaxed static limit: shimmering / animated parts of the same logo
         for y in range(CH - 1):
             row = y * CW
             for x in range(CW - 1):
                 i = row + x
-                e = abs(mean[i + 1] - mean[i]) + abs(mean[i + CW] - mean[i])
-                if e >= 24 and max(abs(f[i] - mean[i]) for f in fr) <= stat_t:
-                    es[i] = e
+                e = 0.0
+                for c in range(3):
+                    j = i * 3 + c
+                    ec = abs(mean[j + 3] - mean[j]) + abs(mean[j + CW * 3] - mean[j])
+                    if ec > e:
+                        e = ec
+                if e >= 24:
+                    dev = 0.0
+                    for c in range(3):
+                        j = i * 3 + c
+                        m = mean[j]
+                        for f in fr:
+                            d_ = abs(f[j] - m)
+                            if d_ > dev:
+                                dev = d_
+                    if dev <= stat_t:
+                        es[i] = e
+                    if dev <= stat2 and e >= grow_e:
+                        es2[i] = e
+
+        GAP = int(os.environ.get("YTM_LOGO_GAP", "2"))
 
         def blob(edge_t, min_cnt):
             cnt = [0] * (gw * gh)
@@ -774,8 +799,8 @@ def logo_probe(hls):
                 while stack:
                     c = stack.pop()
                     comp.append(c)
-                    for dx in (-1, 0, 1):
-                        for dy in (-1, 0, 1):
+                    for dx in range(-GAP, GAP + 1):          # v9: GAP=2 cells (16 px) so a logo made of separate parts (round emblem + caption text) is ONE blob
+                        for dy in range(-GAP, GAP + 1):
                             nx, ny = c % gw + dx, c // gw + dy
                             nc = ny * gw + nx
                             if 0 <= nx < gw and 0 <= ny < gh and nc in act and nc not in seen:
@@ -814,15 +839,48 @@ def logo_probe(hls):
                 px.append((i % CW, i // CW))
         x0p, x1p = min(p_[0] for p_ in px), max(p_[0] for p_ in px)
         y0p, y1p = min(p_[1] for p_ in px), max(p_[1] for p_ in px)
-        # refine: weak edges of the same logo (low-contrast side of a ball etc.) were missed by the strict level -> also take every
-        # static edge pixel (>=24) within 10 px of the box found so far; bounded growth, so far-away background can't pull it out.
-        gx0, gx1, gy0, gy1 = max(0, x0p - 10), min(CW - 1, x1p + 10), max(0, y0p - 10), min(CH - 1, y1p + 10)
-        px = [(xx, yy) for yy in range(gy0, gy1 + 1) for xx in range(gx0, gx1 + 1) if es[yy * CW + xx] > 0] or px
+        # refine/grow (v9): weak, low-contrast or shimmering parts of the SAME logo (a round emblem above its caption, a ball's soft side...)
+        # were missed by the strict level. Take every relaxed-static edge pixel (es2) within 12 px of the box found so far and repeat
+        # (8 rounds, box capped at YTM_LOGO_GROW_MAX=130 px), so far-away background can't pull the box out.
+        GM = int(os.environ.get("YTM_LOGO_GROW_MARGIN", "10"))
+        for _ in range(int(os.environ.get("YTM_LOGO_GROW_ROUNDS", "6"))):
+            gx0, gx1, gy0, gy1 = max(0, x0p - GM), min(CW - 1, x1p + GM), max(0, y0p - GM), min(CH - 1, y1p + GM)
+            grown = [(xx, yy) for yy in range(gy0, gy1 + 1) for xx in range(gx0, gx1 + 1) if es2[yy * CW + xx] > 0]
+            if not grown:
+                break
+            px = grown
+            nx0, nx1 = min(p_[0] for p_ in px), max(p_[0] for p_ in px)
+            ny0, ny1 = min(p_[1] for p_ in px), max(p_[1] for p_ in px)
+            if (nx0, nx1, ny0, ny1) == (x0p, x1p, y0p, y1p):
+                break
+            if max(nx1 - nx0, ny1 - ny0) + 1 > float(os.environ.get("YTM_LOGO_GROW_MAX", "100")):
+                px = [(xx, yy) for yy in range(y0p, y1p + 1) for xx in range(x0p, x1p + 1) if es2[yy * CW + xx] > 0] or px
+                break                                    # chained into something too big (static background) -> keep the last sane box
+            x0p, x1p, y0p, y1p = nx0, nx1, ny0, ny1
         x0p, x1p = min(p_[0] for p_ in px), max(p_[0] for p_ in px)
         y0p, y1p = min(p_[1] for p_ in px), max(p_[1] for p_ in px)
-        cx, cy = X0 + (x0p + x1p) / 2.0, Y0 + (y0p + y1p) / 2.0
-        dist = sorted(math.hypot(p_[0] - (x0p + x1p) / 2.0, p_[1] - (y0p + y1p) / 2.0) for p_ in px)
-        rad = dist[min(len(dist) - 1, int(len(dist) * 0.97))]     # 97th percentile: a few stray static pixels can't inflate the circle
+        # v9: MINIMAL ENCLOSING CIRCLE of the static logo pixels (Badoiu-Clarkson iteration) instead of "bbox centre + 97th-pct radius":
+        # a non-round source logo (two ovals on top of a ring, wide ribbon...) is covered completely, not just its round core.
+        # YTM_LOGO_PCT (0.995) drops the farthest 0.5% of pixels as stray static noise.
+        def _fit(pts):
+            ccx, ccy = (x0p + x1p) / 2.0, (y0p + y1p) / 2.0
+            for it in range(1, 61):
+                fx, fy = max(pts, key=lambda q: (q[0] - ccx) ** 2 + (q[1] - ccy) ** 2)
+                ccx += (fx - ccx) / (it + 1.0)
+                ccy += (fy - ccy) / (it + 1.0)
+            ds = sorted(math.hypot(q[0] - ccx, q[1] - ccy) for q in pts)
+            return ccx, ccy, ds[min(len(ds) - 1, int(len(ds) * float(os.environ.get("YTM_LOGO_PCT", "0.995"))))]
+        lcx, lcy, rad = _fit(px)
+        # coverage check: static edge pixels just outside the circle (another part of the same logo) -> grow, max 2 rounds of 8 px
+        for _ in range(2):
+            near = [(xx, yy) for yy in range(max(0, int(lcy - rad - 8)), min(CH, int(lcy + rad + 9)))
+                    for xx in range(max(0, int(lcx - rad - 8)), min(CW, int(lcx + rad + 9)))
+                    if es2[yy * CW + xx] > 0 and math.hypot(xx - lcx, yy - lcy) <= rad + 8]
+            if len(near) <= len(px) + 4:
+                break
+            px = near
+            lcx, lcy, rad = _fit(px)
+        cx, cy = X0 + lcx, Y0 + lcy
         bx, by, bw, bh = X0 + x0p, Y0 + y0p, x1p - x0p + 1, y1p - y0p + 1
         fill = len(comp) / float((max(xs) - min(xs) + 1) * (max(ys) - min(ys) + 1))
         shape = "circle"                                  # always our round logo
@@ -935,8 +993,8 @@ def wm_probe(hls):
                 while stack:
                     c = stack.pop()
                     comp.append(c)
-                    for dx in (-1, 0, 1):
-                        for dy in (-1, 0, 1):
+                    for dx in range(-GAP, GAP + 1):          # v9: GAP=2 cells (16 px) so a logo made of separate parts (round emblem + caption text) is ONE blob
+                        for dy in range(-GAP, GAP + 1):
                             nx, ny = c % gw + dx, c // gw + dy
                             nc = ny * gw + nx
                             if 0 <= nx < gw and 0 <= ny < gh and nc in act and nc not in seen:
