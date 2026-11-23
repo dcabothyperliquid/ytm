@@ -723,7 +723,7 @@ def mark_present(hls):
 
 
 WORDMARK_ASPECT = 0.5414       # lml_wordmark.png height / width
-LOGO_PROBE_VER = 9          # bump when sizing logic changes: cached per-match specs from older logic are re-probed
+LOGO_PROBE_VER = 10         # bump when sizing logic changes: cached per-match specs from older logic are re-probed
 
 
 def logo_probe(hls):
@@ -754,7 +754,7 @@ def logo_probe(hls):
         # Edge = max over R,G,B of the neighbour step, static = max over R,G,B of the change between frames.
         mean = [sum(f[i] for f in fr) / k for i in range(n3)]
         stat_t = float(os.environ.get("YTM_LOGO_STATIC", "12"))
-        stat2 = float(os.environ.get("YTM_LOGO_STATIC2", "40"))
+        stat2 = float(os.environ.get("YTM_LOGO_STATIC2", "90"))
         grow_e = float(os.environ.get("YTM_LOGO_GROW_E", "60"))      # growth only through STRONG edges: busy static background (patterned banner, grass line) has weak ones
         es = [0.0] * n                                   # edge strength, only where the pixel is static (strict)
         es2 = [0.0] * n                                  # same with a relaxed static limit: shimmering / animated parts of the same logo
