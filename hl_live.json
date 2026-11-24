@@ -1,1 +1,1 @@
-{"phase":"download","detail":"Scout: sirf audio download (match ka time dhoondhne ke liye)","vid":"42KzAAF8Vps","title":"","cur":null,"total":null,"run_id":"45397051234","started":1795524581,"at":1795524585}
+{"phase":"error","detail":"yt-dlp failed (1): ERROR: [youtube] 42KzAAF8Vps: Video unavailable. This content isn’t available.\n","vid":"42KzAAF8Vps","title":"","cur":null,"total":null,"run_id":"45397051234","started":1795524581,"at":1795524587}
