@@ -1,1 +1,1 @@
-{"phase":"download","detail":"Scout: sirf audio download (match ka time dhoondhne ke liye)","vid":"zEktmTMKY7c","title":"","cur":null,"total":null,"run_id":"45609558522","started":1795608096,"at":1795608127}
+{"phase":"error","detail":"yt-dlp failed (1): ERROR: [youtube] zEktmTMKY7c: Failed to extract any player response; please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the ap","vid":"zEktmTMKY7c","title":"","cur":null,"total":null,"run_id":"45609558522","started":1795608096,"at":1795608156}
