@@ -1,1 +1,1 @@
-{"phase":"download","detail":"Confirmed match download ho raha hai (32:25 - 3:56:30)","vid":"OWSTVvxcqjo","title":"NB TROPHY 5.0 | LML Sports","cur":null,"total":null,"run_id":"45818001684","started":1795695777,"at":1795697940}
+{"phase":"error","detail":"yt-dlp failed (1): ERROR: Unable to download video: [Errno 2] No such file or directory: 'work/full_OWSTVvxcqjo.f140.m4a.part-Frag2709'\n","vid":"OWSTVvxcqjo","title":"NB TROPHY 5.0 | LML Sports","cur":null,"total":null,"run_id":"45818001684","started":1795695777,"at":1795698291}
