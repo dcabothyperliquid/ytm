@@ -1,1 +1,1 @@
-{"phase":"download","detail":"Scout: sirf audio download (match ka time dhoondhne ke liye)","vid":"MYI5jxjYBVY","title":"","cur":null,"total":null,"run_id":"45984661824","started":1795776389,"at":1795776414}
+{"phase":"error","detail":"yt-dlp failed (1): ERROR: [youtube] MYI5jxjYBVY: Video unavailable. This content isn’t available.\n","vid":"MYI5jxjYBVY","title":"","cur":null,"total":null,"run_id":"45984661824","started":1795776389,"at":1795776439}
