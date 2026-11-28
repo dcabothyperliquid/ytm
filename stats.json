@@ -1,0 +1,92 @@
+{
+ "generated": 1795895849,
+ "generated_utc": "2026-11-28 19:57",
+ "oauth": true,
+ "channel": {
+  "id": "UCvHaGlkg3HEXaIRMack-fbQ",
+  "title": "Local Match Live",
+  "subscribers": 56,
+  "views": 19906,
+  "videos": 87
+ },
+ "last_28d": {
+  "error": 403,
+  "note": "{\n  \"error\": {\n    \"code\": 403,\n    \"message\": \"YouTube Analytics API has not been used in project 366084356704 before or it is disabled. Enable it by visiting https://console.developers.google.com/ap"
+ },
+ "last_365d": {
+  "error": 403,
+  "note": "{\n  \"error\": {\n    \"code\": 403,\n    \"message\": \"YouTube Analytics API has not been used in project 366084356704 before or it is disabled. Enable it by visiting https://console.developers.google.com/ap"
+ },
+ "bot": {
+  "status": "relaying",
+  "units_today": 4323,
+  "relay": "🔴Neral Premier League 2026 || Day 3",
+  "outcomes_last30": {
+   "ended": 7,
+   "interrupted": 5,
+   "failed": 18
+  },
+  "recent": [
+   {
+    "title": "🔴Neral Premier League 2026 || Day 3",
+    "outcome": "failed",
+    "note": "source not back in 900s",
+    "min": 16
+   },
+   {
+    "title": "🔴Neral Premier League 2026 || Day 3",
+    "outcome": "failed",
+    "note": "source not back in 900s",
+    "min": 16
+   },
+   {
+    "title": "🔴Neral Premier League 2026 || Day 3",
+    "outcome": "failed",
+    "note": "source not back in 900s",
+    "min": 17
+   },
+   {
+    "title": "🔴Neral Premier League 2026 || Day 3",
+    "outcome": "failed",
+    "note": "source not back in 900s",
+    "min": 16
+   },
+   {
+    "title": "🔴Neral Premier League 2026 || Day 3",
+    "outcome": "failed",
+    "note": "source not back in 900s",
+    "min": 15
+   },
+   {
+    "title": "🔴Neral Premier League 2026 || Day 3",
+    "outcome": "failed",
+    "note": "source not back in 900s",
+    "min": 16
+   },
+   {
+    "title": "🔴Neral Premier League 2026 || Day 3",
+    "outcome": "failed",
+    "note": "source not back in 900s",
+    "min": 16
+   },
+   {
+    "title": "🔴Neral Premier League 2026 || Day 3",
+    "outcome": "failed",
+    "note": "source not back in 900s",
+    "min": 16
+   },
+   {
+    "title": "🔴Neral Premier League 2026 || Day 3",
+    "outcome": "failed",
+    "note": "source not back in 900s",
+    "min": 17
+   },
+   {
+    "title": "🔴Neral Premier League 2026 || Day 3",
+    "outcome": "failed",
+    "note": "source not back in 900s",
+    "min": 16
+   }
+  ]
+ }
+}
